@@ -1,19 +1,21 @@
-# bot_prj - Telegram Commit & Website Research Bot
+# bot_prj - Telegram Commit, Dokploy & Website Research Bot
 
-Telegram Bot chuyên nhận Webhook từ GitHub khi có Git Push (tóm tắt bằng Gemini AI) và tự động Research/Kiểm tra trạng thái domain web phim/truyện hàng ngày lúc 07:00 AM.
+Telegram Bot chuyên nhận Webhook từ GitHub khi có Git Push (tóm tắt bằng Gemini AI), nhận Webhook thông báo **Deployment Successful từ Dokploy**, và tự động Research/Kiểm tra trạng thái domain web phim/truyện hàng ngày lúc 07:00 AM.
 
 ## 🚀 Tính năng chính
 - 🔔 Nhận GitHub Push Webhook (`/webhook/github`) & tóm tắt AI.
+- 🚀 Nhận Dokploy Notification Webhook (`/webhook/dokploy`) báo deploy thành công / lỗi.
 - 🕵️‍♂️ Research & Quét tự động danh sách web phim/truyện định kỳ lúc **07:00 AM** hàng ngày.
+- 🧠 AI Smart Search: Dự đoán tên & tìm kiếm phim/truyện trực tiếp.
 - 🔄 Tự động phát hiện & tìm kiếm **domain thay thế mới nhất** qua DuckDuckGo khi domain cũ bị sập/chặn.
-- 🎬 Trích xuất danh sách tập phim / chương truyện mới nhất.
 - 💬 Gửi báo cáo định kỳ về Telegram cá nhân hoặc nhóm chat.
 
 ## 📌 Các lệnh Telegram:
+- `/search <tên>`: AI dự đoán & tìm kiếm phim/truyện trực tiếp.
+- `/add <url>`: Thêm web mới vào danh sách theo dõi.
+- `/del`: Hiện nút bấm (bubbles) chọn xóa website nhanh.
+- `/list`: Xem danh sách & menu nút bấm tương tác.
 - `/research`: Chạy quét & kiểm tra ngay danh sách website.
-- `/targets`: Xem danh sách website đang được theo dõi.
-- `/addtarget <tên> <url> [từ_khóa]`: Thêm website mới vào danh sách.
-- `/deltarget <tên_hoặc_id>`: Xóa website khỏi danh sách theo dõi.
 - `/id`: Xem Chat ID Telegram của bạn.
 - `/ping`: Kiểm tra độ phản hồi của bot.
 
@@ -26,9 +28,5 @@ Telegram Bot chuyên nhận Webhook từ GitHub khi có Git Push (tóm tắt b�
 | `GEMINI_API_KEY` | API Key từ Google AI Studio | Không | `AIzaSy...` |
 | `PORT` | Cổng HTTP Server cho Webhook | Không (mặc định 3000) | `3000` |
 
-## 🐳 Triển khai với Dokploy (Docker)
-
-1. Tạo Application mới trên Dokploy.
-2. Nguồn Repo `aiThss/bot_prj`, branch `main`, Build Type `Dockerfile`.
-3. Đặt các Environment Variables và Port `3000`.
-4. Deploy ứng dụng.
+## 🚀 Cấu hình Webhook Dokploy (Báo Deployment Success):
+- URL Webhook: `https://bot-prj.yourdomain.com/webhook/dokploy`

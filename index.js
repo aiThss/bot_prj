@@ -148,6 +148,60 @@ app.post('/webhook/github', async (req, res) => {
   }
 });
 
+// Dokploy Deployment Webhook Endpoint
+app.post('/webhook/dokploy', async (req, res) => {
+  const body = req.body || {};
+  console.log('Received Dokploy webhook payload:', JSON.stringify(body, null, 2));
+
+  const title = body.title || body.applicationName || body.name || 'Dokploy Notification';
+  const message = body.message || body.description || body.details || '';
+  const status = String(body.status || '').toLowerCase();
+  const timestamp = body.timestamp || new Date();
+
+  if (!title && !message) {
+    return res.status(400).json({ error: 'Missing title and message in payload' });
+  }
+
+  try {
+    let timeStr = '';
+    try {
+      const date = timestamp ? new Date(timestamp) : new Date();
+      timeStr = date.toLocaleString('vi-VN', { timeZone: 'Asia/Bangkok' });
+    } catch (_) {
+      timeStr = new Date().toLocaleString('vi-VN', { timeZone: 'Asia/Bangkok' });
+    }
+
+    let icon = 'ℹ️';
+    const lowerTitle = String(title).toLowerCase();
+    const lowerMessage = String(message).toLowerCase();
+
+    if (status === 'success' || lowerTitle.includes('success') || lowerTitle.includes('thành công') || lowerMessage.includes('success')) {
+      icon = '🚀';
+    } else if (status === 'error' || status === 'failed' || lowerTitle.includes('fail') || lowerTitle.includes('lỗi') || lowerTitle.includes('error') || lowerMessage.includes('error')) {
+      icon = '❌';
+    } else if (lowerTitle.includes('restart') || lowerTitle.includes('khởi động lại')) {
+      icon = '🔄';
+    } else if (lowerTitle.includes('warning') || lowerTitle.includes('cảnh báo')) {
+      icon = '⚠️';
+    }
+
+    let telegramMessage = `${icon} <b>[Dokploy Deployment] ${escapeHtml(title)}</b>\n\n`;
+    if (message) {
+      telegramMessage += `📝 <b>Chi tiết:</b>\n${escapeHtml(message)}\n\n`;
+    }
+    telegramMessage += `🕒 <b>Thời gian:</b> ${timeStr}`;
+
+    await Promise.all(
+      ADMIN_CHAT_IDS.map(chatId => bot.telegram.sendMessage(chatId, telegramMessage, { parse_mode: 'HTML' }))
+    );
+
+    return res.status(200).json({ success: true, message: 'Dokploy notification sent to Telegram' });
+  } catch (error) {
+    console.error('Failed to send Dokploy notification to Telegram:', error.message);
+    return res.status(500).json({ error: 'Failed to send Telegram notification: ' + error.message });
+  }
+});
+
 // Bot Command Menu & Handlers
 const BOT_COMMANDS = [
   { command: 'search', description: 'AI dự đoán & tìm kiếm phim/truyện: /search <tên>' },
