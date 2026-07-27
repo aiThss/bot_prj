@@ -48,46 +48,50 @@ const httpConfig = {
   httpsAgent: new https.Agent({ rejectUnauthorized: false })
 };
 
-// Gọi Gemini API tương thích cả v1 và v1beta endpoints cho gemini-1.5-flash
+// Tự động truy vấn ListModels từ Google AI Studio để lấy chính xác Model khả dụng cho API Key
 async function callGeminiApi(prompt) {
   const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
   if (!GEMINI_API_KEY) {
     return { success: false, error: 'GEMINI_API_KEY chưa được cấu hình trong biến môi trường Dokploy.' };
   }
 
-  const endpoints = [
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
-    `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${GEMINI_API_KEY}`
-  ];
+  try {
+    // 1. Tự động lấy danh sách Model khả dụng được gán cho API Key của người dùng
+    const listRes = await axios.get(
+      `https://generativelanguage.googleapis.com/v1beta/models?key=${GEMINI_API_KEY}`,
+      { timeout: 8000 }
+    );
 
-  const errors = [];
+    const availableModels = listRes.data?.models || [];
+    const validModels = availableModels
+      .filter(m => m.supportedGenerationMethods?.includes('generateContent'))
+      .map(m => m.name.replace(/^models\//, ''));
 
-  for (const url of endpoints) {
-    try {
-      const response = await axios.post(
-        url,
-        { contents: [{ parts: [{ text: prompt }] }] },
-        { headers: { 'Content-Type': 'application/json' }, timeout: 10000 }
-      );
-
-      const generatedText = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (generatedText) {
-        const modelMatch = url.match(/models\/([^:]+):/);
-        const modelName = modelMatch ? modelMatch[1] : 'gemini-1.5-flash';
-        return { success: true, text: generatedText.trim(), model: modelName };
-      }
-    } catch (err) {
-      const msg = err.response?.data?.error?.message || err.message;
-      errors.push(msg);
-      console.warn(`Lỗi khi gọi Gemini API URL (${url.split('?')[0]}):`, msg);
+    if (validModels.length === 0) {
+      return { success: false, error: 'API Key của bạn không có quyền truy cập mô hình generateContent nào từ Google.' };
     }
+
+    // Ưu tiên chọn model 'flash' khả dụng đầu tiên (ví dụ: gemini-1.5-flash-8b, gemini-1.5-flash, v.v.), hoặc lấy model khả dụng đầu tiên
+    const targetModel = validModels.find(m => m.includes('flash')) || validModels[0];
+
+    // 2. Thực hiện sinh nội dung với Model khả dụng chính xác từ Google
+    const response = await axios.post(
+      `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${GEMINI_API_KEY}`,
+      { contents: [{ parts: [{ text: prompt }] }] },
+      { headers: { 'Content-Type': 'application/json' }, timeout: 12000 }
+    );
+
+    const generatedText = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (generatedText) {
+      return { success: true, text: generatedText.trim(), model: targetModel };
+    }
+  } catch (err) {
+    const errorMsg = err.response?.data?.error?.message || err.message;
+    console.error('Lỗi khi gọi Google Gemini API:', errorMsg);
+    return { success: false, error: errorMsg };
   }
 
-  return {
-    success: false,
-    error: errors.join(' | ') || 'Khủng thể kết nối Gemini API'
-  };
+  return { success: false, error: 'Không nhận được phản hồi từ Gemini AI API.' };
 }
 
 // Tự động theo vết link rút gọn (như bit.ly/hh3d) để lấy URL / Domain đích thực tế
