@@ -7,7 +7,7 @@ const https = require('https');
 const httpConfig = {
   headers: {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-    'Accept': '*/*',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
     'Accept-Language': 'vi,en-US;q=0.9,en;q=0.8'
   },
   timeout: 30000,
@@ -15,7 +15,12 @@ const httpConfig = {
   httpsAgent: new https.Agent({ rejectUnauthorized: false })
 };
 
-// Trích xuất Media (Video / Ảnh tập truyện) từ URL trang web
+const escapeHtml = (value) => String(value || '')
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;');
+
+// Trích xuất Media (Video / Tất cả ảnh tập truyện) từ URL trang web
 async function extractMediaFromUrl(targetUrl) {
   let urlStr = String(targetUrl || '').trim();
   if (!/^https?:\/\//i.test(urlStr)) urlStr = 'https://' + urlStr;
@@ -40,36 +45,64 @@ async function extractMediaFromUrl(targetUrl) {
     });
 
     if (!videoUrl) {
-      // Regex match file .mp4 hoặc .m3u8 trực tiếp trong mã HTML/Javascript
       const mp4Match = html.match(/https?:\/\/[^"'\s\\]+\.mp4[^"'\s\\]*/i);
       const m3u8Match = html.match(/https?:\/\/[^"'\s\\]+\.m3u8[^"'\s\\]*/i);
       if (mp4Match) videoUrl = mp4Match[0];
       else if (m3u8Match) videoUrl = m3u8Match[0];
     }
 
-    // 2. Trích xuất danh sách Ảnh Chương Truyện (Manga/Comic Pages)
-    const images = [];
-    $('.page-chapter img, .reading-detail img, .vng-comic-reading img, .container-chapter img, .chapter-content img, .read-content img').each((_, el) => {
-      let src = $(el).attr('src') || $(el).attr('data-src') || $(el).attr('data-original') || $(el).attr('data-cdn');
-      if (src) {
-        src = src.trim();
-        if (src.startsWith('//')) src = 'https:' + src;
-        if (/^https?:\/\//i.test(src) && !src.includes('logo') && !src.includes('banner') && !src.includes('icon')) {
-          try {
-            const absImgUrl = new URL(src, resolvedUrl).href;
-            images.push(absImgUrl);
-          } catch (_) {}
+    // 2. Trích xuất tất cả Ảnh Chương Truyện (FoxTruyen, NetTruyen, TruyenQQ, MangaDex...)
+    const imagesSet = new Set();
+    const selectors = [
+      '.chapter-content img', '#chapter-content img', '.reading-detail img',
+      '.page-chapter img', '.vng-comic-reading img', '.container-chapter img',
+      '.read-content img', '.box-chap img', '.content-chap img', '.reading img',
+      '.comic-content img', '.viewer-content img', 'div[class*="chap"] img',
+      'div[id*="chap"] img', 'div[class*="read"] img', 'div[class*="story"] img'
+    ];
+
+    selectors.forEach(selector => {
+      $(selector).each((_, el) => {
+        let src = $(el).attr('src') || $(el).attr('data-src') || $(el).attr('data-original') || $(el).attr('data-cdn') || $(el).attr('data-lazy-src') || $(el).attr('data-url');
+        if (src) {
+          src = src.trim();
+          if (src.startsWith('//')) src = 'https:' + src;
+          if (/^https?:\/\//i.test(src) && !/logo|banner|icon|avatar|gif|fb|facebook|ads|qc/i.test(src)) {
+            try {
+              const absImgUrl = new URL(src, resolvedUrl).href;
+              imagesSet.add(absImgUrl);
+            } catch (_) {}
+          }
         }
-      }
+      });
     });
+
+    // Fallback nếu không khớp selector cụ thể: lấy tất cả img hợp lệ trong trang
+    if (imagesSet.size === 0 && !videoUrl) {
+      $('img').each((_, el) => {
+        let src = $(el).attr('src') || $(el).attr('data-src') || $(el).attr('data-original');
+        if (src) {
+          src = src.trim();
+          if (src.startsWith('//')) src = 'https:' + src;
+          if (/^https?:\/\//i.test(src) && !/logo|banner|icon|avatar|gif|fb|facebook|ads|qc/i.test(src)) {
+            try {
+              const absImgUrl = new URL(src, resolvedUrl).href;
+              imagesSet.add(absImgUrl);
+            } catch (_) {}
+          }
+        }
+      });
+    }
+
+    const allImages = Array.from(imagesSet);
 
     return {
       success: true,
       title,
       resolvedUrl,
-      type: videoUrl ? 'video' : (images.length > 0 ? 'manga' : 'page'),
+      type: videoUrl ? 'video' : (allImages.length > 0 ? 'manga' : 'page'),
       videoUrl,
-      images: Array.from(new Set(images)).slice(0, 10) // Lấy tối đa 10 ảnh gửi theo Album
+      images: allImages // Trả về tất cả các trang ảnh của chap
     };
   } catch (error) {
     console.error('Lỗi trích xuất media từ URL:', error.message);
@@ -82,7 +115,7 @@ async function extractMediaFromUrl(targetUrl) {
 
 // Xử lý gửi trực tiếp Media vào Telegram Chat
 async function processAndSendMedia(ctx, targetUrl) {
-  const statusMsg = await ctx.reply('⏬ <b>Đang trích xuất media và tải về Telegram cho bạn...</b>', { parse_mode: 'HTML' });
+  const statusMsg = await ctx.reply('⏬ <b>Đang trích xuất toàn bộ trang truyện/video về Telegram cho bạn...</b>', { parse_mode: 'HTML' });
 
   try {
     const mediaInfo = await extractMediaFromUrl(targetUrl);
@@ -97,42 +130,51 @@ async function processAndSendMedia(ctx, targetUrl) {
       if (mediaInfo.videoUrl.includes('.mp4')) {
         await ctx.reply('🎬 <b>Đang tải video trực tiếp về Telegram...</b>', { parse_mode: 'HTML' });
         return ctx.replyWithVideo(mediaInfo.videoUrl, {
-          caption: `🎬 <b>${mediaInfo.title}</b>\n🔗 <a href="${mediaInfo.resolvedUrl}">Xem gốc</a>`,
+          caption: `🎬 <b>${escapeHtml(mediaInfo.title)}</b>\n🔗 <a href="${mediaInfo.resolvedUrl}">Xem gốc</a>`,
           parse_mode: 'HTML'
         });
       } else {
-        // Luồng stream HLS .m3u8 -> Gửi link stream m3u8 kèm player trực tiếp
         return ctx.reply([
-          `🎬 <b>${mediaInfo.title}</b>`,
+          `🎬 <b>${escapeHtml(mediaInfo.title)}</b>`,
           '',
           `📥 <b>Luồng Video Stream (.m3u8):</b>`,
           `<code>${mediaInfo.videoUrl}</code>`,
           '',
-          `💡 <i>Bạn có thể bấm vào link trên để Telegram Desktop phát trực tiếp hoặc tải qua IDM.</i>`
+          `💡 <i>Bạn có thể bấm vào link trên để Telegram phát trực tiếp hoặc tải qua IDM.</i>`
         ].join('\n'), { parse_mode: 'HTML' });
       }
     }
 
-    // B. Gửi Album Ảnh Chương Truyện trực tiếp vào Telegram Chat
+    // B. Gửi Album Tất Cả Trang Truyện (MediaGroup) trực tiếp vào Telegram Chat
     if (mediaInfo.type === 'manga' && mediaInfo.images.length > 0) {
-      await ctx.reply(`📚 <b>Đang tải trọn bộ ${mediaInfo.images.length} trang truyện vào Telegram...</b>`, { parse_mode: 'HTML' });
+      const total = mediaInfo.images.length;
+      await ctx.reply(`📚 <b>Đang tải trọn bộ ${total} trang truyện vào Telegram chat...</b>`, { parse_mode: 'HTML' });
 
-      const mediaGroup = mediaInfo.images.map((imgUrl, index) => ({
-        type: 'photo',
-        media: imgUrl,
-        caption: index === 0 ? `📚 <b>${mediaInfo.title}</b>` : undefined,
-        parse_mode: 'HTML'
-      }));
+      // Telegram cho phép gửi tối đa 10 ảnh / 1 Album (MediaGroup)
+      const chunkSize = 10;
+      for (let i = 0; i < mediaInfo.images.length; i += chunkSize) {
+        const chunk = mediaInfo.images.slice(i, i + chunkSize);
+        const mediaGroup = chunk.map((imgUrl, idx) => ({
+          type: 'photo',
+          media: imgUrl,
+          caption: (i === 0 && idx === 0) ? `📚 <b>${escapeHtml(mediaInfo.title)}</b>\n<i>(Tổng cộng ${total} trang)</i>` : undefined,
+          parse_mode: 'HTML'
+        }));
 
-      return ctx.replyWithMediaGroup(mediaGroup);
+        await ctx.replyWithMediaGroup(mediaGroup).catch(err => {
+          console.warn(`Lỗi khi gửi batch ảnh ${i + 1}-${i + chunk.length}:`, err.message);
+        });
+      }
+
+      return;
     }
 
-    // C. Trường hợp là trang web xem trực tuyến thông thường
+    // C. Trường hợp không tìm thấy media trực tiếp
     return ctx.reply([
-      `📄 <b>${mediaInfo.title}</b>`,
+      `📄 <b>${escapeHtml(mediaInfo.title)}</b>`,
       `🌐 <b>URL:</b> ${mediaInfo.resolvedUrl}`,
       '',
-      `⚠️ <i>Trang web này chưa hỗ trợ trích xuất luồng MP4/Ảnh trực tiếp tự động. Bạn hãy mở link để xem trực tuyến trên Telegram.</i>`
+      `⚠️ <i>Không trích xuất được file media trực tiếp. Bạn hãy mở đường dẫn trên để xem.</i>`
     ].join('\n'), { parse_mode: 'HTML' });
 
   } catch (err) {
