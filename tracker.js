@@ -48,14 +48,22 @@ const httpConfig = {
   httpsAgent: new https.Agent({ rejectUnauthorized: false })
 };
 
-// Gọi Gemini API với các model chuẩn (gemini-1.5-flash, gemini-2.0-flash)
+// Gọi Gemini API với danh sách các model mới & chuẩn nhất (gemini-2.5-flash, gemini-1.5-flash, v.v.)
 async function callGeminiApi(prompt) {
   const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
   if (!GEMINI_API_KEY) {
     return { success: false, error: 'GEMINI_API_KEY chưa được cấu hình trong biến môi trường Dokploy.' };
   }
 
-  const models = ['gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro'];
+  // Danh sách các model Gemini chính thức của Google
+  const models = [
+    'gemini-2.5-flash',
+    'gemini-1.5-flash',
+    'gemini-1.5-pro',
+    'gemini-2.0-flash'
+  ];
+
+  let lastErrorMessage = '';
 
   for (const model of models) {
     try {
@@ -70,11 +78,15 @@ async function callGeminiApi(prompt) {
         return { success: true, text: generatedText.trim(), model };
       }
     } catch (err) {
-      console.warn(`Thử gọi Gemini model ${model} thất bại:`, err.response?.data?.error?.message || err.message);
+      lastErrorMessage = err.response?.data?.error?.message || err.message;
+      console.warn(`Thử gọi Gemini model ${model} thất bại:`, lastErrorMessage);
     }
   }
 
-  return { success: false, error: 'Tất cả các model Gemini đều không phản hồi hoặc API Key không hợp lệ.' };
+  return {
+    success: false,
+    error: `Lỗi kết nối Gemini API (${lastErrorMessage || 'Kiểm tra GEMINI_API_KEY trên Dokploy'})`
+  };
 }
 
 // Tự động theo vết link rút gọn (như bit.ly/hh3d) để lấy URL / Domain đích thực tế
