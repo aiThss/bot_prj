@@ -48,42 +48,45 @@ const httpConfig = {
   httpsAgent: new https.Agent({ rejectUnauthorized: false })
 };
 
-// Gọi Gemini API chuẩn dùng gói Free Tier (gemini-1.5-flash)
+// Gọi Gemini API tương thích cả v1 và v1beta endpoints cho gemini-1.5-flash
 async function callGeminiApi(prompt) {
   const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
   if (!GEMINI_API_KEY) {
     return { success: false, error: 'GEMINI_API_KEY chưa được cấu hình trong biến môi trường Dokploy.' };
   }
 
-  // Gói Miễn Phí (Free Tier) của Google AI Studio cấp Quota cho gemini-1.5-flash và gemini-1.5-pro
-  const models = [
-    'gemini-1.5-flash',
-    'gemini-1.5-pro'
+  const endpoints = [
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+    `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${GEMINI_API_KEY}`
   ];
 
-  let lastErrorMessage = '';
+  const errors = [];
 
-  for (const model of models) {
+  for (const url of endpoints) {
     try {
       const response = await axios.post(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
+        url,
         { contents: [{ parts: [{ text: prompt }] }] },
         { headers: { 'Content-Type': 'application/json' }, timeout: 10000 }
       );
 
       const generatedText = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
       if (generatedText) {
-        return { success: true, text: generatedText.trim(), model };
+        const modelMatch = url.match(/models\/([^:]+):/);
+        const modelName = modelMatch ? modelMatch[1] : 'gemini-1.5-flash';
+        return { success: true, text: generatedText.trim(), model: modelName };
       }
     } catch (err) {
-      lastErrorMessage = err.response?.data?.error?.message || err.message;
-      console.warn(`Thử gọi Gemini model ${model} thất bại:`, lastErrorMessage);
+      const msg = err.response?.data?.error?.message || err.message;
+      errors.push(msg);
+      console.warn(`Lỗi khi gọi Gemini API URL (${url.split('?')[0]}):`, msg);
     }
   }
 
   return {
     success: false,
-    error: `Lỗi Gemini API: ${lastErrorMessage || 'Vui lòng kiểm tra lại GEMINI_API_KEY'}`
+    error: errors.join(' | ') || 'Khủng thể kết nối Gemini API'
   };
 }
 
