@@ -3,7 +3,7 @@ const { Telegraf } = require('telegraf');
 const axios = require('axios');
 require('dotenv').config();
 
-const { loadTargets, saveTargets, runWebsiteResearch, initScheduler } = require('./tracker');
+const { loadTargets, saveTargets, checkWebsiteTarget, searchMovieOrManga, runWebsiteResearch, initScheduler } = require('./tracker');
 
 // Validate required environment variables
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -150,6 +150,7 @@ app.post('/webhook/github', async (req, res) => {
 
 // Bot Command Menu & Handlers
 const BOT_COMMANDS = [
+  { command: 'search', description: 'AI dự đoán & tìm kiếm phim/truyện: /search <tên>' },
   { command: 'add', description: 'Thêm web mới vào danh sách theo dõi: /add <url>' },
   { command: 'del', description: 'Menu chọn bấm nút để xóa website nhanh' },
   { command: 'list', description: 'Xem danh sách & menu tương tác website' },
@@ -164,12 +165,14 @@ const helpText = [
   '',
   '📌 <b>Chức năng chính:</b>',
   '1. Báo Git Push commit từ GitHub bằng AI Gemini.',
-  '2. 🌐 Quét & research tự động danh sách web phim/truyện vào <b>07:00 AM hàng ngày</b> (cập nhật domain mới nhất khi sập và tập/chương mới).',
+  '2. 🌐 Quét & research tự động danh sách web phim/truyện vào <b>07:00 AM hàng ngày</b>.',
+  '3. 🧠 <b>AI Smart Search:</b> Dự đoán tên & tìm kiếm phim/truyện trực tiếp.',
   '',
-  '📌 <b>Các lệnh quản lý Web:</b>',
+  '📌 <b>Các lệnh tìm kiếm & quản lý:</b>',
+  '• <b>/search &lt;tên_phim_truyện&gt;</b> — AI dự đoán & tìm kết quả xem/đọc mới nhất (VD: <code>/search conan</code>)',
   '• <b>/add &lt;url&gt;</b> — Thêm nhanh link web (VD: <code>/add https://phimmoi.com</code>)',
-  '• <b>/del</b> — Hiện nút bấm chọn website để xóa nhanh không cần gõ ID',
-  '• <b>/list</b> (hoặc <b>/targets</b>) — Xem danh sách kèm các nút bấm tương tác',
+  '• <b>/del</b> — Hiện nút bấm chọn website để xóa nhanh',
+  '• <b>/list</b> — Xem danh sách kèm các nút bấm tương tác',
   '• <b>/research</b> — Chạy quét & báo cáo danh sách ngay lập tức',
   '',
   '📌 <b>Các lệnh khác:</b>',
@@ -186,7 +189,7 @@ bot.command('id', async (ctx) => {
   const isConfigured = ADMIN_CHAT_IDS.includes(chatId);
   const status = isConfigured
     ? '✅ Chat ID này đã có trong ADMIN_CHAT_IDS.'
-    : '⚠️ Chat ID này chưa có trong ADMIN_CHAT_IDS.';
+    : '⚠️ Chat ID me chưa có trong ADMIN_CHAT_IDS.';
 
   return ctx.reply([
     '🆔 <b>Telegram Chat ID Information</b>',
@@ -206,13 +209,70 @@ bot.command('research', async (ctx) => {
   await runWebsiteResearch(bot, [String(ctx.chat.id)]);
 });
 
+// Lệnh AI Dự đoán từ khóa & Tìm kiếm Phim/Truyện thông minh (/search, /find, /tim)
+const SEARCH_TITLE_PROMPT = '🔍 Nhập tên phim hoặc truyện bạn muốn AI dự đoán & tìm kiếm:';
+
+async function runTitleSearch(ctx, queryStr) {
+  const statusMsg = await ctx.reply(`🧠 AI đang dự đoán từ khóa & tìm kiếm: "<b>${escapeHtml(queryStr)}</b>"...`, { parse_mode: 'HTML' });
+
+  try {
+    const searchData = await searchMovieOrManga(queryStr);
+    await ctx.deleteMessage(statusMsg.message_id).catch(() => {});
+
+    if (!searchData.results || searchData.results.length === 0) {
+      return ctx.reply(`⚠️ Không tìm thấy kết quả phù hợp cho "<code>${escapeHtml(queryStr)}</code>".`, { parse_mode: 'HTML' });
+    }
+
+    const lines = [
+      `🔍 <b>Kết quả tìm kiếm cho:</b> "<code>${escapeHtml(queryStr)}</code>"`,
+      `🧠 <b>AI Gemini dự đoán từ khóa:</b> <i>"${escapeHtml(searchData.predictedKeyword)}"</i>`,
+      ''
+    ];
+
+    searchData.results.forEach((item, index) => {
+      lines.push(`<b>${index + 1}.</b> <a href="${escapeHtml(item.url)}">${escapeHtml(item.title)}</a>`);
+      if (item.snippet) lines.push(`   <i>${escapeHtml(item.snippet)}</i>`);
+      lines.push('');
+    });
+
+    return ctx.reply(lines.join('\n').slice(0, 4000), {
+      parse_mode: 'HTML',
+      link_preview_options: { is_disabled: true }
+    });
+  } catch (err) {
+    await ctx.deleteMessage(statusMsg.message_id).catch(() => {});
+    console.error('Lỗi khi tìm kiếm phim/truyện:', err);
+    return ctx.reply('❌ Lỗi trong quá trình tìm kiếm phim/truyện.');
+  }
+}
+
+async function handleTitleSearch(ctx) {
+  const text = String(ctx.message?.text || '').trim();
+  const firstSpaceIndex = text.indexOf(' ');
+  const query = firstSpaceIndex === -1 ? '' : text.slice(firstSpaceIndex + 1).trim();
+
+  if (query) return runTitleSearch(ctx, query);
+
+  return ctx.reply(SEARCH_TITLE_PROMPT, {
+    reply_markup: {
+      force_reply: true,
+      selective: true,
+      input_field_placeholder: 'Ví dụ: One Piece hoặc Độc Bộ Tiêu Dao'
+    }
+  });
+}
+
+bot.command('search', handleTitleSearch);
+bot.command('find', handleTitleSearch);
+bot.command('tim', handleTitleSearch);
+
 // Helper tạo bàn phím tương tác cho /list
 function buildListKeyboard() {
   return {
     reply_markup: {
       inline_keyboard: [
         [
-          { text: '🔍 Quét ngay', callback_data: 'act:research' },
+          { text: '🔎 Quét ngay', callback_data: 'act:research' },
           { text: '➕ Thêm Web', callback_data: 'act:add_prompt' },
           { text: '🗑️ Xóa Web', callback_data: 'act:del_menu' }
         ]
@@ -367,7 +427,6 @@ function handleDeleteTarget(ctx) {
   const firstSpaceIndex = text.indexOf(' ');
   const query = firstSpaceIndex === -1 ? '' : text.slice(firstSpaceIndex + 1).trim();
 
-  // Nếu người dùng nhập kèm tên/ID thủ công: /del phim1
   if (query) {
     let targets = loadTargets();
     const initialLength = targets.length;
@@ -381,7 +440,6 @@ function handleDeleteTarget(ctx) {
     return ctx.reply(`✅ Đã xóa website khỏi danh sách theo dõi thành công!`);
   }
 
-  // Nếu người dùng chỉ gõ /del: hiển thị nút bấm (bubble) chọn từng ID
   const deleteKeyboard = buildDeleteKeyboard();
   if (!deleteKeyboard) {
     return ctx.reply('⚠️ Danh sách theo dõi hiện đang trống, không có website nào để xóa.');
@@ -498,6 +556,13 @@ bot.on('text', async (ctx, next) => {
     return runAddTarget(ctx, inputText);
   }
 
+  if (replyText === SEARCH_TITLE_PROMPT) {
+    if (!inputText || inputText.startsWith('/')) {
+      return ctx.reply('⚠️ Hãy nhập tên phim hoặc truyện cần tìm.');
+    }
+    return runTitleSearch(ctx, inputText);
+  }
+
   return next();
 });
 
@@ -526,7 +591,7 @@ bot.launch().then(() => {
 
 // Graceful Shutdown
 const gracefulShutdown = (signal) => {
-  console.log(`${signal} received. Shutting down gracefully...`);
+  console.log(`${signal} received. Shutting down graphql...`);
   bot.stop(signal);
   server.close(() => {
     console.log('HTTP server closed.');

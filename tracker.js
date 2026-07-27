@@ -93,6 +93,74 @@ async function searchLatestMirrorDomain(searchKeyword) {
   }
 }
 
+// AI Dự đoán từ khóa & tìm kiếm phim / truyện thông minh
+async function searchMovieOrManga(query) {
+  const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+  let searchKeyword = query.trim();
+
+  // BƯỚC 1: Dùng AI Gemini để chuẩn hóa & dự đoán tên phim/truyện chuẩn nhất
+  if (GEMINI_API_KEY) {
+    try {
+      const prompt = `Bạn là một AI chuyên môn tìm kiếm phim và truyện. Người dùng nhập tên/từ khóa tìm kiếm: "${query}".
+Hãy dự đoán tên chính xác (tên gốc, tên tiếng Việt, tên tiếng Anh) và tạo 1 từ khóa tìm kiếm Google/DuckDuckGo tốt nhất để tìm trang xem phim hoặc đọc truyện tập/chương mới nhất.
+Chỉ trả về duy nhất chuỗi từ khóa tìm kiếm tối ưu nhất (tối đa 10 từ), tuyệt đối không thêm lời dẫn giải thích.`;
+
+      const aiResponse = await axios.post(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+        { contents: [{ parts: [{ text: prompt }] }] },
+        { headers: { 'Content-Type': 'application/json' }, timeout: 8000 }
+      );
+
+      const predictedKeyword = aiResponse.data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+      if (predictedKeyword) {
+        searchKeyword = predictedKeyword.replace(/^["']|["']$/g, '');
+      }
+    } catch (err) {
+      console.warn('Lỗi khi gọi Gemini AI dự đoán từ khóa:', err.message);
+    }
+  }
+
+  // BƯỚC 2: Thực hiện tìm kiếm web qua DuckDuckGo HTML
+  const encodedQuery = encodeURIComponent(searchKeyword);
+  const searchResults = [];
+
+  try {
+    const response = await axios.get(`https://html.duckduckgo.com/html/?q=${encodedQuery}`, httpConfig);
+    const $ = cheerio.load(response.data);
+
+    $('.result, .results_links').each((_, element) => {
+      const linkEl = $(element).find('.result__a, .result-link').first();
+      const title = linkEl.text().replace(/\s+/g, ' ').trim();
+      const rawHref = linkEl.attr('href');
+      const snippet = $(element).find('.result__snippet, .result-snippet').first().text().replace(/\s+/g, ' ').trim();
+
+      if (!rawHref || !title) return;
+
+      try {
+        const parsedUrl = new URL(rawHref, 'https://duckduckgo.com');
+        const uddg = parsedUrl.searchParams.get('uddg');
+        const finalUrl = uddg ? decodeURIComponent(uddg) : parsedUrl.href;
+
+        if (/^https?:\/\//i.test(finalUrl) && !finalUrl.includes('duckduckgo.com')) {
+          searchResults.push({
+            title,
+            url: finalUrl,
+            snippet
+          });
+        }
+      } catch (_) {}
+    });
+  } catch (err) {
+    console.error('Lỗi khi tìm kiếm web:', err.message);
+  }
+
+  return {
+    originalQuery: query,
+    predictedKeyword: searchKeyword,
+    results: searchResults.slice(0, 6)
+  };
+}
+
 // Kiểm tra 1 website target
 async function checkWebsiteTarget(target) {
   const result = {
@@ -221,6 +289,8 @@ function initScheduler(bot, adminChatIds) {
 module.exports = {
   loadTargets,
   saveTargets,
+  checkWebsiteTarget,
+  searchMovieOrManga,
   runWebsiteResearch,
   initScheduler
 };
