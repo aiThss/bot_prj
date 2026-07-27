@@ -33,10 +33,11 @@ Telegram Bot chuyên nhận Webhook từ GitHub khi có Git Push, tự động t
 6. Cấu hình **Domain** trong Dokploy (VD: `bot-prj.yourdomain.com`).
 7. Nhấn **Deploy**.
 
-## 🔗 Cấu hình GitHub Webhook
-1. Vào repository GitHub bất kỳ mà bạn muốn nhận thông báo.
-2. Vào **Settings** -> **Webhooks** -> **Add webhook**.
-3. **Payload URL:** `https://your-domain.com/webhook/github`
-4. **Content type:** `application/json`
-5. **Which events:** Chọn `Just the push event`.
-6. Nhấn **Add webhook**.
+## ⚡ Cấu hình Webhook Báo Commit Tự Động (Tất Cả Repositories)
+
+### 🌟 Dùng GitHub App (Tốt nhất cho Tài Khoản Cá Nhân)
+1. Vào **GitHub Developer Settings**: [github.com/settings/apps](https://github.com/settings/apps).
+2. Nhấn vào GitHub App của bạn (Ví dụ: `tele-noti-bot`).
+3. Trong mục **Webhook**, cập nhật **Webhook URL**: `https://bot-prj.yourdomain.com/webhook/github`.
+4. Đảm bảo đánh dấu chọn **Active** và nhấn **Save changes**.
+5. Chọn tab **Install App** -> Đảm bảo chọn **All repositories** để tự động báo commit cho toàn bộ các repo hiện tại và tương lai.
