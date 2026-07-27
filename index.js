@@ -3,7 +3,7 @@ const { Telegraf } = require('telegraf');
 const axios = require('axios');
 require('dotenv').config();
 
-const { loadTargets, saveTargets, checkWebsiteTarget, searchMovieOrManga, runWebsiteResearch, initScheduler } = require('./tracker');
+const { loadTargets, saveTargets, resolveDestinationUrl, checkWebsiteTarget, searchMovieOrManga, runWebsiteResearch, initScheduler } = require('./tracker');
 
 // Validate required environment variables
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -221,12 +221,12 @@ const helpText = [
   '1. Báo Git Push commit từ GitHub bằng AI Gemini.',
   '2. Báo Dokploy Deployment thành công / lỗi.',
   '3. 🌐 Quét & research tự động danh sách web phim/truyện vào <b>07:00 AM hàng ngày</b>.',
-  '4. 🧠 <b>AI Smart Search:</b> Tìm kiếm phim/truyện trực tiếp trên các Web cụ thể trong danh sách.',
+  '4. 🧠 <b>AI Smart Search:</b> Tìm kiếm phim/truyện trực tiếp trên các Web cụ thể trong danh sách (hỗ trợ tự động giải mã link rút gọn bit.ly).',
   '',
   '📌 <b>Các lệnh tìm kiếm & quản lý:</b>',
-  '• <b>/search &lt;tên&gt;</b> — AI dự đoán & tìm trên tất cả web theo dõi (VD: <code>/search tiên nghịch</code>)',
-  '• <b>/search PhimMoi &lt;tên&gt;</b> — Tìm kiếm trực tiếp trên web PhimMoi (VD: <code>/search PhimMoi tiên nghịch</code>)',
-  '• <b>/add &lt;url&gt;</b> — Thêm nhanh link web (VD: <code>/add https://phimmoi.com</code>)',
+  '• <b>/search &lt;tên&gt;</b> — Tìm trên tất cả web theo dõi (VD: <code>/search tiên nghịch</code>)',
+  '• <b>/search &lt;tên_web&gt; &lt;tên_phim&gt;</b> — Tìm trực tiếp trên 1 web cụ thể (VD: <code>/search HH3D tiên nghịch</code>)',
+  '• <b>/add &lt;url&gt;</b> — Thêm link web (tự động theo vết link bit.ly, VD: <code>/add bit.ly/hh3d</code>)',
   '• <b>/del</b> — Hiện nút bấm chọn website để xóa nhanh',
   '• <b>/list</b> — Xem danh sách kèm các nút bấm tương tác',
   '• <b>/research</b> — Chạy quét & báo cáo danh sách ngay lập tức',
@@ -465,7 +465,16 @@ function parseAddArguments(inputStr) {
 async function runAddTarget(ctx, inputStr) {
   const parsed = parseAddArguments(inputStr);
   if (!parsed || !parsed.url) {
-    return ctx.reply('⚠️ Cú pháp không hợp lệ. Ví dụ:\n• <code>/add https://phimmoi.com</code>\n• <code>/add PhimMoi https://phimmoi.com</code>', { parse_mode: 'HTML' });
+    return ctx.reply('⚠️ Cú pháp không hợp lệ. Ví dụ:\n• <code>/add https://bit.ly/hh3d</code>\n• <code>/add PhimMoi https://phimmoi.com</code>', { parse_mode: 'HTML' });
+  }
+
+  const resolvedUrl = await resolveDestinationUrl(parsed.url);
+  let finalName = parsed.name;
+  if (!finalName || finalName.toLowerCase() === 'bit' || resolvedUrl !== parsed.url) {
+    try {
+      const hostname = new URL(resolvedUrl).hostname.replace(/^www\./, '').split('.')[0];
+      if (hostname) finalName = hostname.charAt(0).toUpperCase() + hostname.slice(1);
+    } catch (_) {}
   }
 
   const targets = loadTargets();
@@ -473,9 +482,9 @@ async function runAddTarget(ctx, inputStr) {
 
   targets.push({
     id: newId,
-    name: parsed.name,
-    url: parsed.url,
-    searchKeyword: parsed.searchKeyword,
+    name: finalName || parsed.name,
+    url: resolvedUrl,
+    searchKeyword: parsed.searchKeyword || `${finalName || parsed.name} domain moi nhat`,
     enabled: true
   });
 
@@ -484,8 +493,8 @@ async function runAddTarget(ctx, inputStr) {
   return ctx.reply([
     '✅ <b>Đã thêm website vào danh sách theo dõi thành công!</b>',
     '',
-    `📌 <b>Tên:</b> ${escapeHtml(parsed.name)} (ID: <code>${newId}</code>)`,
-    `🌐 <b>URL:</b> ${escapeHtml(parsed.url)}`,
+    `📌 <b>Tên:</b> ${escapeHtml(finalName || parsed.name)} (ID: <code>${newId}</code>)`,
+    `🌐 <b>URL Gốc / Giải Mã:</b> ${escapeHtml(resolvedUrl)}`,
     `🔍 <b>Từ khóa tìm kiếm mirror:</b> <i>${escapeHtml(parsed.searchKeyword)}</i>`
   ].join('\n'), { parse_mode: 'HTML', link_preview_options: { is_disabled: true }, ...buildListKeyboard() });
 }

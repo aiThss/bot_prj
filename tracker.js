@@ -7,25 +7,9 @@ const cron = require('node-cron');
 
 const TARGETS_FILE = path.join(__dirname, 'targets.json');
 
-// Khởi tạo file targets.json nếu chưa tồn tại
+// Khởi tạo file targets.json nếu chưa tồn tại (Mặc định mảng rỗng, KHÔNG tự ý chèn dữ liệu mẫu)
 if (!fs.existsSync(TARGETS_FILE)) {
-  const defaultTargets = [
-    {
-      id: "phim1",
-      name: "PhimMoi",
-      url: "https://phimmoichill.net",
-      searchKeyword: "phimmoichill domain moi nhat",
-      enabled: true
-    },
-    {
-      id: "truyen1",
-      name: "NetTruyen",
-      url: "https://nettruyen.live",
-      searchKeyword: "nettruyen domain moi nhat",
-      enabled: true
-    }
-  ];
-  fs.writeFileSync(TARGETS_FILE, JSON.stringify(defaultTargets, null, 2), 'utf8');
+  fs.writeFileSync(TARGETS_FILE, JSON.stringify([], null, 2), 'utf8');
 }
 
 function loadTargets() {
@@ -60,9 +44,24 @@ const httpConfig = {
     'Accept-Language': 'vi,en-US;q=0.9,en;q=0.8'
   },
   timeout: 12000,
-  maxRedirects: 5,
+  maxRedirects: 10,
   httpsAgent: new https.Agent({ rejectUnauthorized: false })
 };
+
+// Tự động theo vết link rút gọn (như bit.ly/hh3d) để lấy URL / Domain đích thực tế
+async function resolveDestinationUrl(inputUrl) {
+  let target = String(inputUrl || '').trim();
+  if (!target) return null;
+  if (!/^https?:\/\//i.test(target)) target = 'https://' + target;
+
+  try {
+    const response = await axios.get(target, httpConfig);
+    const finalUrl = response.request?.res?.responseUrl || target;
+    return finalUrl;
+  } catch (error) {
+    return target;
+  }
+}
 
 // Tìm kiếm domain thay thế mới nhất qua DuckDuckGo khi domain chính bị sập
 async function searchLatestMirrorDomain(searchKeyword) {
@@ -93,6 +92,59 @@ async function searchLatestMirrorDomain(searchKeyword) {
   }
 }
 
+// Tìm kiếm trực tiếp trên thanh tìm kiếm nội bộ của trang web (Direct In-Site Search)
+async function searchDirectOnSite(baseUrl, query) {
+  const results = [];
+  const encodedQuery = encodeURIComponent(query);
+  const searchUrls = [
+    `${baseUrl.replace(/\/$/, '')}/?s=${encodedQuery}`,
+    `${baseUrl.replace(/\/$/, '')}/tim-kiem?q=${encodedQuery}`,
+    `${baseUrl.replace(/\/$/, '')}/search?keyword=${encodedQuery}`,
+    `${baseUrl.replace(/\/$/, '')}/tim-truyen?keyword=${encodedQuery}`
+  ];
+
+  for (const searchUrl of searchUrls) {
+    try {
+      const response = await axios.get(searchUrl, httpConfig);
+      const resolvedUrl = response.request?.res?.responseUrl || baseUrl;
+      const $ = cheerio.load(response.data);
+
+      const itemsSet = new Set();
+      $('a[href]').each((_, el) => {
+        const text = $(el).text().replace(/\s+/g, ' ').trim();
+        const href = $(el).attr('href');
+
+        if (!text || !href || href.startsWith('#') || href.startsWith('javascript:')) return;
+
+        // Lọc các thẻ có chứa từ khóa tìm kiếm (có dấu hoặc không dấu)
+        const lowerText = text.toLowerCase();
+        const lowerQuery = query.toLowerCase();
+        const words = lowerQuery.split(/\s+/).filter(w => w.length > 1);
+
+        const matchesQuery = lowerText.includes(lowerQuery) || words.every(w => lowerText.includes(w));
+
+        if (matchesQuery && text.length < 80) {
+          try {
+            const absUrl = new URL(href, resolvedUrl).href;
+            itemsSet.add({ title: text, url: absUrl });
+          } catch (_) {}
+        }
+      });
+
+      if (itemsSet.size > 0) {
+        Array.from(itemsSet).slice(0, 5).forEach(item => {
+          results.push(item);
+        });
+        break; // Tìm thấy kết quả từ ô tìm kiếm nội bộ -> dừng thử các URL khác
+      }
+    } catch (_) {
+      // Tiếp tục thử URL tìm kiếm tiếp theo
+    }
+  }
+
+  return results;
+}
+
 // AI Dự đoán từ khóa & Tìm kiếm Phim/Truyện trực tiếp trên Web Cụ Thể
 async function searchMovieOrManga(query, siteFilter = null) {
   const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -100,7 +152,6 @@ async function searchMovieOrManga(query, siteFilter = null) {
   const allTargets = loadTargets().filter(t => t.enabled !== false);
   let selectedTargets = allTargets;
 
-  // Nếu người dùng lọc tìm trên 1 trang web cụ thể
   if (siteFilter) {
     const filterLower = siteFilter.toLowerCase();
     const matched = allTargets.filter(t =>
@@ -113,7 +164,7 @@ async function searchMovieOrManga(query, siteFilter = null) {
     }
   }
 
-  // BƯỚC 1: Dùng AI Gemini để chuẩn hóa & dự đoán từ khóa chuẩn nhất
+  // BƯỚC 1: Dùng AI Gemini để chuẩn hóa & dự đoán từ khóa chuẩn nhất (nếu có API Key)
   if (GEMINI_API_KEY) {
     try {
       const prompt = `Bạn là một AI chuyên môn tìm kiếm phim và truyện. Người dùng nhập từ khóa tìm kiếm: "${query}".
@@ -136,52 +187,72 @@ Chỉ trả về duy nhất chuỗi từ khóa tìm kiếm tối ưu nhất (t�
   }
 
   const results = [];
+  const seenUrls = new Set();
 
-  // BƯỚC 2: Tìm kiếm trực tiếp trên các Web cụ thể (Site-Restricted Search)
+  // BƯỚC 2: Tìm kiếm trực tiếp trên các Web cụ thể
   for (const target of selectedTargets) {
-    let hostname = target.url;
+    // Giải mã link gốc (theo vết link rút gọn bit.ly nếu có)
+    const resolvedBaseUrl = await resolveDestinationUrl(target.url);
+    let hostname = resolvedBaseUrl;
     try {
-      hostname = new URL(target.url).hostname.replace(/^www\./, '');
+      hostname = new URL(resolvedBaseUrl).hostname.replace(/^www\./, '');
     } catch (_) {}
 
-    const siteQuery = `site:${hostname} ${searchKeyword}`;
+    // A. Thử tìm trực tiếp qua form tìm kiếm nội bộ của trang web (Direct In-Site Search)
+    const directResults = await searchDirectOnSite(resolvedBaseUrl, query);
+    directResults.forEach(item => {
+      if (!seenUrls.has(item.url)) {
+        seenUrls.add(item.url);
+        results.push({
+          siteName: target.name,
+          title: item.title,
+          url: item.url,
+          snippet: `Trích xuất trực tiếp từ ${target.name} (${hostname})`
+        });
+      }
+    });
 
-    try {
-      const response = await axios.get(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(siteQuery)}`, httpConfig);
-      const $ = cheerio.load(response.data);
+    // B. Tìm kiếm qua DuckDuckGo kèm site filter của domain đã giải mã (site:destination-domain.com query)
+    const queriesToTry = [`site:${hostname} ${query}`, `site:${hostname} ${searchKeyword}`];
+    for (const qStr of queriesToTry) {
+      try {
+        const response = await axios.get(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(qStr)}`, httpConfig);
+        const $ = cheerio.load(response.data);
 
-      $('.result, .results_links').each((_, element) => {
-        const linkEl = $(element).find('.result__a, .result-link').first();
-        const title = linkEl.text().replace(/\s+/g, ' ').trim();
-        const rawHref = linkEl.attr('href');
-        const snippet = $(element).find('.result__snippet, .result-snippet').first().text().replace(/\s+/g, ' ').trim();
+        $('.result, .results_links').each((_, element) => {
+          const linkEl = $(element).find('.result__a, .result-link').first();
+          const title = linkEl.text().replace(/\s+/g, ' ').trim();
+          const rawHref = linkEl.attr('href');
+          const snippet = $(element).find('.result__snippet, .result-snippet').first().text().replace(/\s+/g, ' ').trim();
 
-        if (!rawHref || !title) return;
+          if (!rawHref || !title) return;
 
-        try {
-          const parsedUrl = new URL(rawHref, 'https://duckduckgo.com');
-          const uddg = parsedUrl.searchParams.get('uddg');
-          const finalUrl = uddg ? decodeURIComponent(uddg) : parsedUrl.href;
+          try {
+            const parsedUrl = new URL(rawHref, 'https://duckduckgo.com');
+            const uddg = parsedUrl.searchParams.get('uddg');
+            const finalUrl = uddg ? decodeURIComponent(uddg) : parsedUrl.href;
 
-          if (/^https?:\/\//i.test(finalUrl) && !finalUrl.includes('duckduckgo.com')) {
-            results.push({
-              siteName: target.name,
-              title,
-              url: finalUrl,
-              snippet
-            });
-          }
-        } catch (_) {}
-      });
-    } catch (err) {
-      console.warn(`Lỗi khi search site ${target.name}:`, err.message);
+            if (/^https?:\/\//i.test(finalUrl) && !finalUrl.includes('duckduckgo.com') && !seenUrls.has(finalUrl)) {
+              seenUrls.add(finalUrl);
+              results.push({
+                siteName: target.name,
+                title,
+                url: finalUrl,
+                snippet
+              });
+            }
+          } catch (_) {}
+        });
+      } catch (err) {
+        console.warn(`Lỗi khi search site ${target.name}:`, err.message);
+      }
     }
   }
 
   // BƯỚC 3: Fallback tìm kiếm chung nếu chưa có kết quả từ các site cụ thể
   if (results.length === 0) {
     try {
-      const fallbackQuery = `${searchKeyword} xem phim đọc truyện vietsub`;
+      const fallbackQuery = `${query} xem phim đọc truyện vietsub`;
       const response = await axios.get(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(fallbackQuery)}`, httpConfig);
       const $ = cheerio.load(response.data);
 
@@ -198,7 +269,8 @@ Chỉ trả về duy nhất chuỗi từ khóa tìm kiếm tối ưu nhất (t�
           const uddg = parsedUrl.searchParams.get('uddg');
           const finalUrl = uddg ? decodeURIComponent(uddg) : parsedUrl.href;
 
-          if (/^https?:\/\//i.test(finalUrl) && !finalUrl.includes('duckduckgo.com')) {
+          if (/^https?:\/\//i.test(finalUrl) && !finalUrl.includes('duckduckgo.com') && !seenUrls.has(finalUrl)) {
+            seenUrls.add(finalUrl);
             results.push({
               siteName: 'Web Search',
               title,
@@ -223,19 +295,20 @@ Chỉ trả về duy nhất chuỗi từ khóa tìm kiếm tối ưu nhất (t�
 
 // Kiểm tra 1 website target
 async function checkWebsiteTarget(target) {
+  const resolvedBaseUrl = await resolveDestinationUrl(target.url);
   const result = {
     name: target.name,
     originalUrl: target.url,
     status: 'UNKNOWN',
-    finalUrl: target.url,
+    finalUrl: resolvedBaseUrl,
     latestUpdates: [],
     suggestedMirrors: [],
     errorMsg: null
   };
 
   try {
-    const response = await axios.get(target.url, httpConfig);
-    const resolvedUrl = response.request?.res?.responseUrl || target.url;
+    const response = await axios.get(resolvedBaseUrl, httpConfig);
+    const resolvedUrl = response.request?.res?.responseUrl || resolvedBaseUrl;
     result.finalUrl = resolvedUrl;
     result.status = 'ONLINE';
 
@@ -349,6 +422,7 @@ function initScheduler(bot, adminChatIds) {
 module.exports = {
   loadTargets,
   saveTargets,
+  resolveDestinationUrl,
   checkWebsiteTarget,
   searchMovieOrManga,
   runWebsiteResearch,
