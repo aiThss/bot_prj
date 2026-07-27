@@ -5,11 +5,27 @@ const cheerio = require('cheerio');
 const https = require('https');
 const cron = require('node-cron');
 
-const TARGETS_FILE = path.join(__dirname, 'targets.json');
+// Đường dẫn thư mục dữ liệu bền vững (survives Docker redeploy)
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
 
-// Khởi tạo file targets.json nếu chưa tồn tại (Mặc định mảng rỗng, KHÔNG tự ý chèn dữ liệu mẫu)
+const TARGETS_FILE = path.join(DATA_DIR, 'targets.json');
+const LEGACY_TARGETS_FILE = path.join(__dirname, 'targets.json');
+
+// Tự động di chuyển dữ liệu cũ từ legacy path nếu có
 if (!fs.existsSync(TARGETS_FILE)) {
-  fs.writeFileSync(TARGETS_FILE, JSON.stringify([], null, 2), 'utf8');
+  if (fs.existsSync(LEGACY_TARGETS_FILE)) {
+    try {
+      fs.copyFileSync(LEGACY_TARGETS_FILE, TARGETS_FILE);
+      console.log('[Tracker] Đã di chuyển targets.json sang thư mục dữ liệu bền vững (/app/data)');
+    } catch (_) {
+      fs.writeFileSync(TARGETS_FILE, JSON.stringify([], null, 2), 'utf8');
+    }
+  } else {
+    fs.writeFileSync(TARGETS_FILE, JSON.stringify([], null, 2), 'utf8');
+  }
 }
 
 function loadTargets() {
@@ -189,7 +205,6 @@ async function searchDirectOnSite(baseUrl, query) {
       if (itemsSet.size > 0) {
         const rawItems = Array.from(itemsSet).slice(0, 5);
         for (const item of rawItems) {
-          // Nếu link trỏ vào trang phim chung (không có thông tin tập cụ thể), tự động lấy tập mới nhất
           if (!/(tap-\d+|episode-\d+|\d+\.html|xem-phim)/i.test(item.url)) {
             try {
               const pageRes = await axios.get(item.url, httpConfig);
