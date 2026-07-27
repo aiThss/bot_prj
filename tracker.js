@@ -93,17 +93,32 @@ async function searchLatestMirrorDomain(searchKeyword) {
   }
 }
 
-// AI Dự đoán từ khóa & tìm kiếm phim / truyện thông minh
-async function searchMovieOrManga(query) {
+// AI Dự đoán từ khóa & Tìm kiếm Phim/Truyện trực tiếp trên Web Cụ Thể
+async function searchMovieOrManga(query, siteFilter = null) {
   const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
   let searchKeyword = query.trim();
+  const allTargets = loadTargets().filter(t => t.enabled !== false);
+  let selectedTargets = allTargets;
 
-  // BƯỚC 1: Dùng AI Gemini để chuẩn hóa & dự đoán tên phim/truyện chuẩn nhất
+  // Nếu người dùng lọc tìm trên 1 trang web cụ thể
+  if (siteFilter) {
+    const filterLower = siteFilter.toLowerCase();
+    const matched = allTargets.filter(t =>
+      t.id.toLowerCase() === filterLower ||
+      t.name.toLowerCase().includes(filterLower) ||
+      t.url.toLowerCase().includes(filterLower)
+    );
+    if (matched.length > 0) {
+      selectedTargets = matched;
+    }
+  }
+
+  // BƯỚC 1: Dùng AI Gemini để chuẩn hóa & dự đoán từ khóa chuẩn nhất
   if (GEMINI_API_KEY) {
     try {
-      const prompt = `Bạn là một AI chuyên môn tìm kiếm phim và truyện. Người dùng nhập tên/từ khóa tìm kiếm: "${query}".
-Hãy dự đoán tên chính xác (tên gốc, tên tiếng Việt, tên tiếng Anh) và tạo 1 từ khóa tìm kiếm Google/DuckDuckGo tốt nhất để tìm trang xem phim hoặc đọc truyện tập/chương mới nhất.
-Chỉ trả về duy nhất chuỗi từ khóa tìm kiếm tối ưu nhất (tối đa 10 từ), tuyệt đối không thêm lời dẫn giải thích.`;
+      const prompt = `Bạn là một AI chuyên môn tìm kiếm phim và truyện. Người dùng nhập từ khóa tìm kiếm: "${query}".
+Hãy đưa ra 1 cụm từ khóa tiếng Việt chuẩn nhất để tìm kiếm tập phim hoặc chương truyện mới nhất trên các trang web phim/truyện.
+Chỉ trả về duy nhất chuỗi từ khóa tìm kiếm tối ưu nhất (tối đa 8 từ), không giải thích.`;
 
       const aiResponse = await axios.post(
         `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
@@ -120,44 +135,89 @@ Chỉ trả về duy nhất chuỗi từ khóa tìm kiếm tối ưu nhất (t�
     }
   }
 
-  // BƯỚC 2: Thực hiện tìm kiếm web qua DuckDuckGo HTML
-  const encodedQuery = encodeURIComponent(searchKeyword);
-  const searchResults = [];
+  const results = [];
 
-  try {
-    const response = await axios.get(`https://html.duckduckgo.com/html/?q=${encodedQuery}`, httpConfig);
-    const $ = cheerio.load(response.data);
+  // BƯỚC 2: Tìm kiếm trực tiếp trên các Web cụ thể (Site-Restricted Search)
+  for (const target of selectedTargets) {
+    let hostname = target.url;
+    try {
+      hostname = new URL(target.url).hostname.replace(/^www\./, '');
+    } catch (_) {}
 
-    $('.result, .results_links').each((_, element) => {
-      const linkEl = $(element).find('.result__a, .result-link').first();
-      const title = linkEl.text().replace(/\s+/g, ' ').trim();
-      const rawHref = linkEl.attr('href');
-      const snippet = $(element).find('.result__snippet, .result-snippet').first().text().replace(/\s+/g, ' ').trim();
+    const siteQuery = `site:${hostname} ${searchKeyword}`;
 
-      if (!rawHref || !title) return;
+    try {
+      const response = await axios.get(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(siteQuery)}`, httpConfig);
+      const $ = cheerio.load(response.data);
 
-      try {
-        const parsedUrl = new URL(rawHref, 'https://duckduckgo.com');
-        const uddg = parsedUrl.searchParams.get('uddg');
-        const finalUrl = uddg ? decodeURIComponent(uddg) : parsedUrl.href;
+      $('.result, .results_links').each((_, element) => {
+        const linkEl = $(element).find('.result__a, .result-link').first();
+        const title = linkEl.text().replace(/\s+/g, ' ').trim();
+        const rawHref = linkEl.attr('href');
+        const snippet = $(element).find('.result__snippet, .result-snippet').first().text().replace(/\s+/g, ' ').trim();
 
-        if (/^https?:\/\//i.test(finalUrl) && !finalUrl.includes('duckduckgo.com')) {
-          searchResults.push({
-            title,
-            url: finalUrl,
-            snippet
-          });
-        }
-      } catch (_) {}
-    });
-  } catch (err) {
-    console.error('Lỗi khi tìm kiếm web:', err.message);
+        if (!rawHref || !title) return;
+
+        try {
+          const parsedUrl = new URL(rawHref, 'https://duckduckgo.com');
+          const uddg = parsedUrl.searchParams.get('uddg');
+          const finalUrl = uddg ? decodeURIComponent(uddg) : parsedUrl.href;
+
+          if (/^https?:\/\//i.test(finalUrl) && !finalUrl.includes('duckduckgo.com')) {
+            results.push({
+              siteName: target.name,
+              title,
+              url: finalUrl,
+              snippet
+            });
+          }
+        } catch (_) {}
+      });
+    } catch (err) {
+      console.warn(`Lỗi khi search site ${target.name}:`, err.message);
+    }
+  }
+
+  // BƯỚC 3: Fallback tìm kiếm chung nếu chưa có kết quả từ các site cụ thể
+  if (results.length === 0) {
+    try {
+      const fallbackQuery = `${searchKeyword} xem phim đọc truyện vietsub`;
+      const response = await axios.get(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(fallbackQuery)}`, httpConfig);
+      const $ = cheerio.load(response.data);
+
+      $('.result, .results_links').each((_, element) => {
+        const linkEl = $(element).find('.result__a, .result-link').first();
+        const title = linkEl.text().replace(/\s+/g, ' ').trim();
+        const rawHref = linkEl.attr('href');
+        const snippet = $(element).find('.result__snippet, .result-snippet').first().text().replace(/\s+/g, ' ').trim();
+
+        if (!rawHref || !title) return;
+
+        try {
+          const parsedUrl = new URL(rawHref, 'https://duckduckgo.com');
+          const uddg = parsedUrl.searchParams.get('uddg');
+          const finalUrl = uddg ? decodeURIComponent(uddg) : parsedUrl.href;
+
+          if (/^https?:\/\//i.test(finalUrl) && !finalUrl.includes('duckduckgo.com')) {
+            results.push({
+              siteName: 'Web Search',
+              title,
+              url: finalUrl,
+              snippet
+            });
+          }
+        } catch (_) {}
+      });
+    } catch (err) {
+      console.error('Lỗi khi fallback search:', err.message);
+    }
   }
 
   return {
     originalQuery: query,
     predictedKeyword: searchKeyword,
-    results: searchResults.slice(0, 6)
+    siteFilter: siteFilter,
+    results: results.slice(0, 8)
   };
 }
 

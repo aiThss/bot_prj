@@ -204,7 +204,7 @@ app.post('/webhook/dokploy', async (req, res) => {
 
 // Bot Command Menu & Handlers
 const BOT_COMMANDS = [
-  { command: 'search', description: 'AI dự đoán & tìm kiếm phim/truyện: /search <tên>' },
+  { command: 'search', description: 'Tìm kiếm phim/truyện trên Web cụ thể hoặc tất cả web' },
   { command: 'add', description: 'Thêm web mới vào danh sách theo dõi: /add <url>' },
   { command: 'del', description: 'Menu chọn bấm nút để xóa website nhanh' },
   { command: 'list', description: 'Xem danh sách & menu tương tác website' },
@@ -219,11 +219,13 @@ const helpText = [
   '',
   '📌 <b>Chức năng chính:</b>',
   '1. Báo Git Push commit từ GitHub bằng AI Gemini.',
-  '2. 🌐 Quét & research tự động danh sách web phim/truyện vào <b>07:00 AM hàng ngày</b>.',
-  '3. 🧠 <b>AI Smart Search:</b> Dự đoán tên & tìm kiếm phim/truyện trực tiếp.',
+  '2. Báo Dokploy Deployment thành công / lỗi.',
+  '3. 🌐 Quét & research tự động danh sách web phim/truyện vào <b>07:00 AM hàng ngày</b>.',
+  '4. 🧠 <b>AI Smart Search:</b> Tìm kiếm phim/truyện trực tiếp trên các Web cụ thể trong danh sách.',
   '',
   '📌 <b>Các lệnh tìm kiếm & quản lý:</b>',
-  '• <b>/search &lt;tên_phim_truyện&gt;</b> — AI dự đoán & tìm kết quả xem/đọc mới nhất (VD: <code>/search conan</code>)',
+  '• <b>/search &lt;tên&gt;</b> — AI dự đoán & tìm trên tất cả web theo dõi (VD: <code>/search tiên nghịch</code>)',
+  '• <b>/search PhimMoi &lt;tên&gt;</b> — Tìm kiếm trực tiếp trên web PhimMoi (VD: <code>/search PhimMoi tiên nghịch</code>)',
   '• <b>/add &lt;url&gt;</b> — Thêm nhanh link web (VD: <code>/add https://phimmoi.com</code>)',
   '• <b>/del</b> — Hiện nút bấm chọn website để xóa nhanh',
   '• <b>/list</b> — Xem danh sách kèm các nút bấm tương tác',
@@ -243,7 +245,7 @@ bot.command('id', async (ctx) => {
   const isConfigured = ADMIN_CHAT_IDS.includes(chatId);
   const status = isConfigured
     ? '✅ Chat ID này đã có trong ADMIN_CHAT_IDS.'
-    : '⚠️ Chat ID me chưa có trong ADMIN_CHAT_IDS.';
+    : '⚠️ Chat ID này chưa có trong ADMIN_CHAT_IDS.';
 
   return ctx.reply([
     '🆔 <b>Telegram Chat ID Information</b>',
@@ -263,28 +265,45 @@ bot.command('research', async (ctx) => {
   await runWebsiteResearch(bot, [String(ctx.chat.id)]);
 });
 
-// Lệnh AI Dự đoán từ khóa & Tìm kiếm Phim/Truyện thông minh (/search, /find, /tim)
-const SEARCH_TITLE_PROMPT = '🔍 Nhập tên phim hoặc truyện bạn muốn AI dự đoán & tìm kiếm:';
+// AI Dự đoán từ khóa & Tìm kiếm Phim/Truyện thông minh trên Web Cụ Thể
+const SEARCH_TITLE_PROMPT = '🔍 Nhập tên phim/truyện cần tìm:';
 
-async function runTitleSearch(ctx, queryStr) {
-  const statusMsg = await ctx.reply(`🧠 AI đang dự đoán từ khóa & tìm kiếm: "<b>${escapeHtml(queryStr)}</b>"...`, { parse_mode: 'HTML' });
+function buildSearchSiteKeyboard() {
+  const targets = loadTargets();
+  const inline_keyboard = [
+    [{ text: '🌐 Tìm kiếm trên TẤT CẢ Web theo dõi', callback_data: 'src_site:all' }]
+  ];
+
+  targets.forEach((t) => {
+    inline_keyboard.push([
+      { text: `🔎 Chỉ tìm trên: ${t.name}`, callback_data: `src_site:${t.id}` }
+    ]);
+  });
+
+  return { reply_markup: { inline_keyboard } };
+}
+
+async function runTitleSearch(ctx, queryStr, siteFilter = null) {
+  const targetLabel = siteFilter ? ` trên <b>${escapeHtml(siteFilter)}</b>` : ' trên các web theo dõi';
+  const statusMsg = await ctx.reply(`🧠 AI đang tìm kiếm: "<b>${escapeHtml(queryStr)}</b>"${targetLabel}...`, { parse_mode: 'HTML' });
 
   try {
-    const searchData = await searchMovieOrManga(queryStr);
+    const searchData = await searchMovieOrManga(queryStr, siteFilter);
     await ctx.deleteMessage(statusMsg.message_id).catch(() => {});
 
     if (!searchData.results || searchData.results.length === 0) {
-      return ctx.reply(`⚠️ Không tìm thấy kết quả phù hợp cho "<code>${escapeHtml(queryStr)}</code>".`, { parse_mode: 'HTML' });
+      return ctx.reply(`⚠️ Không tìm thấy kết quả phù hợp cho "<code>${escapeHtml(queryStr)}</code>"${targetLabel}.\n👉 <i>Mẹo: Hãy gõ tên không dấu hoặc thử từ khóa ngắn hơn.</i>`, { parse_mode: 'HTML' });
     }
 
     const lines = [
-      `🔍 <b>Kết quả tìm kiếm cho:</b> "<code>${escapeHtml(queryStr)}</code>"`,
+      `🔍 <b>Kết quả tìm kiếm cho:</b> "<code>${escapeHtml(queryStr)}</code>"${targetLabel}`,
       `🧠 <b>AI Gemini dự đoán từ khóa:</b> <i>"${escapeHtml(searchData.predictedKeyword)}"</i>`,
       ''
     ];
 
     searchData.results.forEach((item, index) => {
-      lines.push(`<b>${index + 1}.</b> <a href="${escapeHtml(item.url)}">${escapeHtml(item.title)}</a>`);
+      const siteTag = item.siteName ? `[${escapeHtml(item.siteName)}] ` : '';
+      lines.push(`<b>${index + 1}. ${siteTag}</b><a href="${escapeHtml(item.url)}">${escapeHtml(item.title)}</a>`);
       if (item.snippet) lines.push(`   <i>${escapeHtml(item.snippet)}</i>`);
       lines.push('');
     });
@@ -303,16 +322,28 @@ async function runTitleSearch(ctx, queryStr) {
 async function handleTitleSearch(ctx) {
   const text = String(ctx.message?.text || '').trim();
   const firstSpaceIndex = text.indexOf(' ');
-  const query = firstSpaceIndex === -1 ? '' : text.slice(firstSpaceIndex + 1).trim();
+  const rawQuery = firstSpaceIndex === -1 ? '' : text.slice(firstSpaceIndex + 1).trim();
 
-  if (query) return runTitleSearch(ctx, query);
+  if (rawQuery) {
+    const parts = rawQuery.split(/\s+/);
+    const firstWord = parts[0];
+    const targets = loadTargets();
+    const matchedTarget = targets.find(t =>
+      t.id.toLowerCase() === firstWord.toLowerCase() ||
+      t.name.toLowerCase() === firstWord.toLowerCase()
+    );
 
-  return ctx.reply(SEARCH_TITLE_PROMPT, {
-    reply_markup: {
-      force_reply: true,
-      selective: true,
-      input_field_placeholder: 'Ví dụ: One Piece hoặc Độc Bộ Tiêu Dao'
+    if (matchedTarget && parts.length > 1) {
+      const subQuery = parts.slice(1).join(' ');
+      return runTitleSearch(ctx, subQuery, matchedTarget.name);
     }
+
+    return runTitleSearch(ctx, rawQuery, null);
+  }
+
+  return ctx.reply('🔍 <b>Chọn trang web bạn muốn tìm kiếm hoặc nhập từ khóa bên dưới:</b>', {
+    parse_mode: 'HTML',
+    ...buildSearchSiteKeyboard()
   });
 }
 
@@ -326,9 +357,12 @@ function buildListKeyboard() {
     reply_markup: {
       inline_keyboard: [
         [
-          { text: '🔎 Quét ngay', callback_data: 'act:research' },
+          { text: '🔎 Tìm Phim/Truyện', callback_data: 'act:search_menu' },
           { text: '➕ Thêm Web', callback_data: 'act:add_prompt' },
           { text: '🗑️ Xóa Web', callback_data: 'act:del_menu' }
+        ],
+        [
+          { text: '⚡ Quét Báo Cáo Ngay (07:00 AM)', callback_data: 'act:research' }
         ]
       ]
     }
@@ -510,6 +544,35 @@ bot.command('deltarget', handleDeleteTarget);
 
 // Callbacks xử lý sự kiện bấm Nút (Bubble Action Callbacks)
 
+// Search site Callbacks
+bot.action(/^src_site:(.+)$/, async (ctx) => {
+  const siteId = ctx.match[1];
+  await ctx.answerCbQuery();
+
+  if (siteId === 'all') {
+    return ctx.reply(SEARCH_TITLE_PROMPT, {
+      reply_markup: {
+        force_reply: true,
+        selective: true,
+        input_field_placeholder: 'Ví dụ: tiên nghịch'
+      }
+    });
+  }
+
+  const targets = loadTargets();
+  const target = targets.find(t => t.id === siteId);
+  const siteName = target ? target.name : siteId;
+
+  return ctx.reply(`🔍 <b>[${escapeHtml(siteName)}]</b> Nhập tên phim hoặc truyện cần tìm trên trang này:`, {
+    parse_mode: 'HTML',
+    reply_markup: {
+      force_reply: true,
+      selective: true,
+      input_field_placeholder: `Tìm trên ${siteName}...`
+    }
+  });
+});
+
 // 1. Xóa 1 website cụ thể
 bot.action(/^del:([a-zA-Z0-9_]+)$/, async (ctx) => {
   const targetId = ctx.match[1];
@@ -574,6 +637,14 @@ bot.action('act:research', async (ctx) => {
   await runWebsiteResearch(bot, [String(ctx.chat.id)]);
 });
 
+bot.action('act:search_menu', async (ctx) => {
+  await ctx.answerCbQuery();
+  return ctx.reply('🔍 <b>Chọn trang web bạn muốn tìm kiếm hoặc nhập từ khóa:</b>', {
+    parse_mode: 'HTML',
+    ...buildSearchSiteKeyboard()
+  });
+});
+
 bot.action('act:add_prompt', async (ctx) => {
   await ctx.answerCbQuery();
   return ctx.reply(ADD_INPUT_PROMPT, {
@@ -614,7 +685,16 @@ bot.on('text', async (ctx, next) => {
     if (!inputText || inputText.startsWith('/')) {
       return ctx.reply('⚠️ Hãy nhập tên phim hoặc truyện cần tìm.');
     }
-    return runTitleSearch(ctx, inputText);
+    return runTitleSearch(ctx, inputText, null);
+  }
+
+  if (/🔍\s*\[(.*?)\]\s*Nhập tên phim hoặc truyện cần tìm/i.test(replyText)) {
+    const match = replyText.match(/🔍\s*\[(.*?)\]/);
+    const siteName = match ? match[1] : null;
+    if (!inputText || inputText.startsWith('/')) {
+      return ctx.reply('⚠️ Hãy nhập tên phim hoặc truyện cần tìm.');
+    }
+    return runTitleSearch(ctx, inputText, siteName);
   }
 
   return next();
@@ -645,7 +725,7 @@ bot.launch().then(() => {
 
 // Graceful Shutdown
 const gracefulShutdown = (signal) => {
-  console.log(`${signal} received. Shutting down graphql...`);
+  console.log(`${signal} received. Shutting down gracefully...`);
   bot.stop(signal);
   server.close(() => {
     console.log('HTTP server closed.');
