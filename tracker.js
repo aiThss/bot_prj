@@ -48,19 +48,17 @@ const httpConfig = {
   httpsAgent: new https.Agent({ rejectUnauthorized: false })
 };
 
-// Gọi Gemini API với danh sách các model mới & chuẩn nhất (gemini-2.5-flash, gemini-1.5-flash, v.v.)
+// Gọi Gemini API chuẩn dùng gói Free Tier (gemini-1.5-flash)
 async function callGeminiApi(prompt) {
   const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
   if (!GEMINI_API_KEY) {
     return { success: false, error: 'GEMINI_API_KEY chưa được cấu hình trong biến môi trường Dokploy.' };
   }
 
-  // Danh sách các model Gemini chính thức của Google
+  // Gói Miễn Phí (Free Tier) của Google AI Studio cấp Quota cho gemini-1.5-flash và gemini-1.5-pro
   const models = [
-    'gemini-2.5-flash',
     'gemini-1.5-flash',
-    'gemini-1.5-pro',
-    'gemini-2.0-flash'
+    'gemini-1.5-pro'
   ];
 
   let lastErrorMessage = '';
@@ -85,7 +83,7 @@ async function callGeminiApi(prompt) {
 
   return {
     success: false,
-    error: `Lỗi kết nối Gemini API (${lastErrorMessage || 'Kiểm tra GEMINI_API_KEY trên Dokploy'})`
+    error: `Lỗi Gemini API: ${lastErrorMessage || 'Vui lòng kiểm tra lại GEMINI_API_KEY'}`
   };
 }
 
