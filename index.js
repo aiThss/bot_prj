@@ -4,6 +4,7 @@ const axios = require('axios');
 require('dotenv').config();
 
 const { loadTargets, saveTargets, resolveDestinationUrl, checkWebsiteTarget, searchMovieOrManga, runWebsiteResearch, initScheduler } = require('./tracker');
+const { processAndSendMedia } = require('./downloader');
 
 // Validate required environment variables
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -205,6 +206,7 @@ app.post('/webhook/dokploy', async (req, res) => {
 // Bot Command Menu & Handlers
 const BOT_COMMANDS = [
   { command: 'search', description: 'Tìm kiếm phim/truyện trên Web cụ thể hoặc tất cả web' },
+  { command: 'dl', description: 'Tải media/video/truyện trực tiếp vào Telegram: /dl <url>' },
   { command: 'add', description: 'Thêm web mới vào danh sách theo dõi: /add <url>' },
   { command: 'del', description: 'Menu chọn bấm nút để xóa website nhanh' },
   { command: 'list', description: 'Xem danh sách & menu tương tác website' },
@@ -221,12 +223,13 @@ const helpText = [
   '1. Báo Git Push commit từ GitHub bằng AI Gemini.',
   '2. Báo Dokploy Deployment thành công / lỗi.',
   '3. 🌐 Quét & research tự động danh sách web phim/truyện vào <b>07:00 AM hàng ngày</b>.',
-  '4. 🧠 <b>AI Smart Search:</b> Tìm kiếm phim/truyện trực tiếp trên các Web cụ thể trong danh sách (hỗ trợ tự động giải mã link rút gọn bit.ly).',
+  '4. 🧠 <b>AI Smart Search:</b> Tìm kiếm phim/truyện trực tiếp trên các Web cụ thể trong danh sách.',
+  '5. 📥 <b>Telegram Media Downloader:</b> Tải video MP4/Ảnh truyện trực tiếp về Telegram Chat.',
   '',
-  '📌 <b>Các lệnh tìm kiếm & quản lý:</b>',
-  '• <b>/search &lt;tên&gt;</b> — Tìm trên tất cả web theo dõi (VD: <code>/search tiên nghịch</code>)',
-  '• <b>/search &lt;tên_web&gt; &lt;tên_phim&gt;</b> — Tìm trực tiếp trên 1 web cụ thể (VD: <code>/search HH3D tiên nghịch</code>)',
-  '• <b>/add &lt;url&gt;</b> — Thêm link web (tự động theo vết link bit.ly, VD: <code>/add bit.ly/hh3d</code>)',
+  '📌 <b>Các lệnh tìm kiếm, tải & quản lý:</b>',
+  '• <b>/search &lt;tên&gt;</b> — Tìm phim/truyện (VD: <code>/search tiên nghịch</code>)',
+  '• <b>/dl &lt;url&gt;</b> — Tải video/truyện từ URL về thẳng Telegram (VD: <code>/dl https://bit.ly/hh3d</code>)',
+  '• <b>/add &lt;url&gt;</b> — Thêm link web (VD: <code>/add bit.ly/hh3d</code>)',
   '• <b>/del</b> — Hiện nút bấm chọn website để xóa nhanh',
   '• <b>/list</b> — Xem danh sách kèm các nút bấm tương tác',
   '• <b>/research</b> — Chạy quét & báo cáo danh sách ngay lập tức',
@@ -265,6 +268,31 @@ bot.command('research', async (ctx) => {
   await runWebsiteResearch(bot, [String(ctx.chat.id)]);
 });
 
+// Lệnh Tải Media Trực Tiếp về Telegram (/dl, /download, /tai)
+const DOWNLOAD_INPUT_PROMPT = '📥 Nhập đường dẫn URL phim hoặc tập truyện bạn muốn tải về Telegram:';
+
+async function handleDownloadCommand(ctx) {
+  const text = String(ctx.message?.text || '').trim();
+  const firstSpaceIndex = text.indexOf(' ');
+  const urlArg = firstSpaceIndex === -1 ? '' : text.slice(firstSpaceIndex + 1).trim();
+
+  if (!urlArg) {
+    return ctx.reply(DOWNLOAD_INPUT_PROMPT, {
+      reply_markup: {
+        force_reply: true,
+        selective: true,
+        input_field_placeholder: 'Ví dụ: https://hh3dvip.net/tap-85'
+      }
+    });
+  }
+
+  return processAndSendMedia(ctx, urlArg);
+}
+
+bot.command('download', handleDownloadCommand);
+bot.command('dl', handleDownloadCommand);
+bot.command('tai', handleDownloadCommand);
+
 // AI Dự đoán từ khóa & Tìm kiếm Phim/Truyện thông minh trên Web Cụ Thể
 const SEARCH_TITLE_PROMPT = '🔍 Nhập tên phim/truyện cần tìm:';
 
@@ -301,16 +329,27 @@ async function runTitleSearch(ctx, queryStr, siteFilter = null) {
       ''
     ];
 
+    const inline_keyboard = [];
+
     searchData.results.forEach((item, index) => {
       const siteTag = item.siteName ? `[${escapeHtml(item.siteName)}] ` : '';
       lines.push(`<b>${index + 1}. ${siteTag}</b><a href="${escapeHtml(item.url)}">${escapeHtml(item.title)}</a>`);
       if (item.snippet) lines.push(`   <i>${escapeHtml(item.snippet)}</i>`);
       lines.push('');
+
+      // Đính kèm Nút Tải về Telegram trực tiếp
+      const encodedUrl = Buffer.from(item.url).toString('base64url');
+      if (index < 5 && encodedUrl.length < 60) {
+        inline_keyboard.push([
+          { text: `📥 Tải Kếtt quả ${index + 1} về Telegram`, callback_data: `dl_link:${encodedUrl}` }
+        ]);
+      }
     });
 
     return ctx.reply(lines.join('\n').slice(0, 4000), {
       parse_mode: 'HTML',
-      link_preview_options: { is_disabled: true }
+      link_preview_options: { is_disabled: true },
+      reply_markup: inline_keyboard.length > 0 ? { inline_keyboard } : undefined
     });
   } catch (err) {
     await ctx.deleteMessage(statusMsg.message_id).catch(() => {});
@@ -358,6 +397,7 @@ function buildListKeyboard() {
       inline_keyboard: [
         [
           { text: '🔎 Tìm Phim/Truyện', callback_data: 'act:search_menu' },
+          { text: '📥 Tải Media', callback_data: 'act:dl_prompt' },
           { text: '➕ Thêm Web', callback_data: 'act:add_prompt' },
           { text: '🗑️ Xóa Web', callback_data: 'act:del_menu' }
         ],
@@ -553,6 +593,18 @@ bot.command('deltarget', handleDeleteTarget);
 
 // Callbacks xử lý sự kiện bấm Nút (Bubble Action Callbacks)
 
+// Callback Tải trực tiếp về Telegram
+bot.action(/^dl_link:(.+)$/, async (ctx) => {
+  await ctx.answerCbQuery('⏬ Đang tải media về Telegram...');
+  const encodedUrl = ctx.match[1];
+  try {
+    const rawUrl = Buffer.from(encodedUrl, 'base64url').toString('utf8');
+    return processAndSendMedia(ctx, rawUrl);
+  } catch (err) {
+    return ctx.reply('❌ Link tải không hợp lệ.');
+  }
+});
+
 // Search site Callbacks
 bot.action(/^src_site:(.+)$/, async (ctx) => {
   const siteId = ctx.match[1];
@@ -646,6 +698,17 @@ bot.action('act:research', async (ctx) => {
   await runWebsiteResearch(bot, [String(ctx.chat.id)]);
 });
 
+bot.action('act:dl_prompt', async (ctx) => {
+  await ctx.answerCbQuery();
+  return ctx.reply(DOWNLOAD_INPUT_PROMPT, {
+    reply_markup: {
+      force_reply: true,
+      selective: true,
+      input_field_placeholder: 'Dán link phim/truyện vào đây...'
+    }
+  });
+});
+
 bot.action('act:search_menu', async (ctx) => {
   await ctx.answerCbQuery();
   return ctx.reply('🔍 <b>Chọn trang web bạn muốn tìm kiếm hoặc nhập từ khóa:</b>', {
@@ -688,6 +751,13 @@ bot.on('text', async (ctx, next) => {
       return ctx.reply('⚠️ Hãy nhập URL hoặc tên website cần theo dõi.');
     }
     return runAddTarget(ctx, inputText);
+  }
+
+  if (replyText === DOWNLOAD_INPUT_PROMPT) {
+    if (!inputText || inputText.startsWith('/')) {
+      return ctx.reply('⚠️ Hãy nhập link phim/truyện cần tải.');
+    }
+    return processAndSendMedia(ctx, inputText);
   }
 
   if (replyText === SEARCH_TITLE_PROMPT) {
