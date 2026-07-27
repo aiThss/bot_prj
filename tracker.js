@@ -40,13 +40,42 @@ const escapeHtml = (value) => String(value || '')
 const httpConfig = {
   headers: {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
     'Accept-Language': 'vi,en-US;q=0.9,en;q=0.8'
   },
-  timeout: 12000,
-  maxRedirects: 10,
+  timeout: 30000,
+  maxRedirects: 5,
   httpsAgent: new https.Agent({ rejectUnauthorized: false })
 };
+
+// Gọi Gemini API với các model chuẩn (gemini-1.5-flash, gemini-2.0-flash)
+async function callGeminiApi(prompt) {
+  const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+  if (!GEMINI_API_KEY) {
+    return { success: false, error: 'GEMINI_API_KEY chưa được cấu hình trong biến môi trường Dokploy.' };
+  }
+
+  const models = ['gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro'];
+
+  for (const model of models) {
+    try {
+      const response = await axios.post(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
+        { contents: [{ parts: [{ text: prompt }] }] },
+        { headers: { 'Content-Type': 'application/json' }, timeout: 10000 }
+      );
+
+      const generatedText = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (generatedText) {
+        return { success: true, text: generatedText.trim(), model };
+      }
+    } catch (err) {
+      console.warn(`Thử gọi Gemini model ${model} thất bại:`, err.response?.data?.error?.message || err.message);
+    }
+  }
+
+  return { success: false, error: 'Tất cả các model Gemini đều không phản hồi hoặc API Key không hợp lệ.' };
+}
 
 // Tự động theo vết link rút gọn (như bit.ly/hh3d) để lấy URL / Domain đích thực tế
 async function resolveDestinationUrl(inputUrl) {
@@ -116,7 +145,6 @@ async function searchDirectOnSite(baseUrl, query) {
 
         if (!text || !href || href.startsWith('#') || href.startsWith('javascript:')) return;
 
-        // Lọc các thẻ có chứa từ khóa tìm kiếm (có dấu hoặc không dấu)
         const lowerText = text.toLowerCase();
         const lowerQuery = query.toLowerCase();
         const words = lowerQuery.split(/\s+/).filter(w => w.length > 1);
@@ -135,11 +163,9 @@ async function searchDirectOnSite(baseUrl, query) {
         Array.from(itemsSet).slice(0, 5).forEach(item => {
           results.push(item);
         });
-        break; // Tìm thấy kết quả từ ô tìm kiếm nội bộ -> dừng thử các URL khác
+        break;
       }
-    } catch (_) {
-      // Tiếp tục thử URL tìm kiếm tiếp theo
-    }
+    } catch (_) {}
   }
 
   return results;
@@ -147,7 +173,6 @@ async function searchDirectOnSite(baseUrl, query) {
 
 // AI Dự đoán từ khóa & Tìm kiếm Phim/Truyện trực tiếp trên Web Cụ Thể
 async function searchMovieOrManga(query, siteFilter = null) {
-  const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
   let searchKeyword = query.trim();
   const allTargets = loadTargets().filter(t => t.enabled !== false);
   let selectedTargets = allTargets;
@@ -164,26 +189,14 @@ async function searchMovieOrManga(query, siteFilter = null) {
     }
   }
 
-  // BƯỚC 1: Dùng AI Gemini để chuẩn hóa & dự đoán từ khóa chuẩn nhất (nếu có API Key)
-  if (GEMINI_API_KEY) {
-    try {
-      const prompt = `Bạn là một AI chuyên môn tìm kiếm phim và truyện. Người dùng nhập từ khóa tìm kiếm: "${query}".
+  // BƯỚC 1: Dùng AI Gemini để chuẩn hóa & dự đoán từ khóa chuẩn nhất
+  const prompt = `Bạn là một AI chuyên môn tìm kiếm phim và truyện. Người dùng nhập từ khóa tìm kiếm: "${query}".
 Hãy đưa ra 1 cụm từ khóa tiếng Việt chuẩn nhất để tìm kiếm tập phim hoặc chương truyện mới nhất trên các trang web phim/truyện.
 Chỉ trả về duy nhất chuỗi từ khóa tìm kiếm tối ưu nhất (tối đa 8 từ), không giải thích.`;
 
-      const aiResponse = await axios.post(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
-        { contents: [{ parts: [{ text: prompt }] }] },
-        { headers: { 'Content-Type': 'application/json' }, timeout: 8000 }
-      );
-
-      const predictedKeyword = aiResponse.data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-      if (predictedKeyword) {
-        searchKeyword = predictedKeyword.replace(/^["']|["']$/g, '');
-      }
-    } catch (err) {
-      console.warn('Lỗi khi gọi Gemini AI dự đoán từ khóa:', err.message);
-    }
+  const aiResult = await callGeminiApi(prompt);
+  if (aiResult.success && aiResult.text) {
+    searchKeyword = aiResult.text.replace(/^["']|["']$/g, '');
   }
 
   const results = [];
@@ -191,7 +204,6 @@ Chỉ trả về duy nhất chuỗi từ khóa tìm kiếm tối ưu nhất (t�
 
   // BƯỚC 2: Tìm kiếm trực tiếp trên các Web cụ thể
   for (const target of selectedTargets) {
-    // Giải mã link gốc (theo vết link rút gọn bit.ly nếu có)
     const resolvedBaseUrl = await resolveDestinationUrl(target.url);
     let hostname = resolvedBaseUrl;
     try {
@@ -212,7 +224,7 @@ Chỉ trả về duy nhất chuỗi từ khóa tìm kiếm tối ưu nhất (t�
       }
     });
 
-    // B. Tìm kiếm qua DuckDuckGo kèm site filter của domain đã giải mã (site:destination-domain.com query)
+    // B. Tìm kiếm qua DuckDuckGo kèm site filter của domain đã giải mã
     const queriesToTry = [`site:${hostname} ${query}`, `site:${hostname} ${searchKeyword}`];
     for (const qStr of queriesToTry) {
       try {
@@ -422,6 +434,7 @@ function initScheduler(bot, adminChatIds) {
 module.exports = {
   loadTargets,
   saveTargets,
+  callGeminiApi,
   resolveDestinationUrl,
   checkWebsiteTarget,
   searchMovieOrManga,

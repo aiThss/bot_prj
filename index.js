@@ -3,7 +3,7 @@ const { Telegraf } = require('telegraf');
 const axios = require('axios');
 require('dotenv').config();
 
-const { loadTargets, saveTargets, resolveDestinationUrl, checkWebsiteTarget, searchMovieOrManga, runWebsiteResearch, initScheduler } = require('./tracker');
+const { loadTargets, saveTargets, callGeminiApi, resolveDestinationUrl, checkWebsiteTarget, searchMovieOrManga, runWebsiteResearch, initScheduler } = require('./tracker');
 const { processAndSendMedia } = require('./downloader');
 
 // Validate required environment variables
@@ -42,12 +42,6 @@ const bot = new Telegraf(BOT_TOKEN);
 
 // Function to summarize commits using Gemini API
 async function summarizeCommits(commits) {
-  const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-  if (!GEMINI_API_KEY) {
-    console.log('Gemini API key is not configured, skipping AI summarization.');
-    return null;
-  }
-
   const commitDetails = commits.map((c, i) => {
     const shortHash = c.id?.substring(0, 7) || 'unknown';
     const author = c.author?.name || 'Unknown';
@@ -66,25 +60,11 @@ Yêu cầu định dạng kết quả trả về:
 4. Đưa ra phần tóm tắt ngắn gọn của các thay đổi chính (ví dụ: sửa lỗi gì, thêm tính năng gì, ảnh hưởng gì).
 `;
 
-  try {
-    const response = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
-      {
-        contents: [{ parts: [{ text: prompt }] }]
-      },
-      {
-        headers: { 'Content-Type': 'application/json' },
-        timeout: 12000
-      }
-    );
-
-    const generatedText = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (generatedText) {
-      return generatedText.trim();
-    }
-  } catch (error) {
-    console.error('Lỗi khi gọi Gemini API:', error.message);
+  const res = await callGeminiApi(prompt);
+  if (res.success && res.text) {
+    return res.text;
   }
+  console.warn('Lỗi tóm tắt commit qua AI:', res.error);
   return null;
 }
 
@@ -207,6 +187,7 @@ app.post('/webhook/dokploy', async (req, res) => {
 const BOT_COMMANDS = [
   { command: 'search', description: 'Tìm kiếm phim/truyện trên Web cụ thể hoặc tất cả web' },
   { command: 'dl', description: 'Tải media/video/truyện trực tiếp vào Telegram: /dl <url>' },
+  { command: 'ai', description: 'Kiểm tra trạng thái Google Gemini AI API' },
   { command: 'add', description: 'Thêm web mới vào danh sách theo dõi: /add <url>' },
   { command: 'del', description: 'Menu chọn bấm nút để xóa website nhanh' },
   { command: 'list', description: 'Xem danh sách & menu tương tác website' },
@@ -244,19 +225,23 @@ const helpText = [
   '  👉 <code>/dl https://foxtruyen2.com/truyen-tranh/ten-truyen/chap-85</code>',
   '  👉 <code>/dl bit.ly/hh3d</code> (Tự động theo vết link rút gọn)',
   '• <b>Tải qua Nút Bấm:</b>',
-  '  👉 Khi gõ <code>/search</code>, bấm nút <code>[ 📥 Tải Kếtt quả về Telegram ]</code> ngay bên dưới kết quả.',
+  '  👉 Khi gõ <code>/search</code>, bấm nút <code>[ 📥 Tải Kết quả về Telegram ]</code> ngay bên dưới kết quả.',
   '• 💡 <b>Mẹo Đọc/Xem Offline:</b>',
   '  <i>Khi file/ảnh đã gửi vào Telegram chat, bạn bấm chuyển tiếp (Forward) vào "Saved Messages". Lần sau dù ngắt mạng vẫn có thể mở ra xem/đọc offline 100%!</i>',
   '',
   '========================================',
-  '🌐 <b>4. QUẢN LÝ DANH SÁCH WEBSITE THEO DÕI:</b>',
+  '🤖 <b>4. KIỂM TRA TRẠNG THÁI AI GEMINI (/ai):</b>',
+  '• Gõ <code>/ai</code> để test ngay xem API Key AI Gemini có hoạt động hay đang bị lỗi/quá quota.',
+  '',
+  '========================================',
+  '🌐 <b>5. QUẢN LÝ DANH SÁCH WEBSITE THEO DÕI:</b>',
   '• <b>/list</b> (hoặc <code>/targets</code>) — Xem danh sách web theo dõi & menu nút bấm tương tác.',
   '• <b>/add &lt;url&gt;</b> — Thêm web mới (VD: <code>/add bit.ly/hh3d</code> hoặc <code>/add PhimMoi https://phimmoi.com</code>).',
   '• <b>/del</b> — Hiện giao diện nút bấm chọn xóa web nhanh.',
   '• <b>/research</b> — Chạy quét và báo cáo trạng thái các web ngay lập tức.',
   '',
   '========================================',
-  '⚙️ <b>5. CẤU HÌNH WEBHOOK & LỆNH KHÁC:</b>',
+  '⚙️ <b>6. CẤU HÌNH WEBHOOK & LỆNH KHÁC:</b>',
   '• <b>GitHub Webhook URL:</b> <code>https://domain-cua-ban/webhook/github</code>',
   '• <b>Dokploy Webhook URL:</b> <code>https://domain-cua-ban/webhook/dokploy</code>',
   '• <b>/id</b> — Xem Chat ID Telegram của bạn.',
@@ -285,6 +270,36 @@ bot.command('id', async (ctx) => {
 });
 
 bot.command('ping', (ctx) => ctx.reply('🏓 Pong! Bot đang hoạt động bình thường.'));
+
+// Lệnh Kiểm Tra Trạng Thái Kết Nối Gemini AI API (/ai, /aicheck)
+bot.command('ai', async (ctx) => {
+  const statusMsg = await ctx.reply('🤖 Đang kiểm tra kết nối tới Google Gemini AI API...', { parse_mode: 'HTML' });
+
+  const testResult = await callGeminiApi('Hãy trả lời duy nhất câu: "AI Gemini đang hoạt động mượt mà!"');
+  await ctx.deleteMessage(statusMsg.message_id).catch(() => {});
+
+  if (testResult.success) {
+    return ctx.reply([
+      '✅ <b>KẾT NỐI GEMINI AI HOẠT ĐỘNG BÌNH THƯỜNG!</b>',
+      '',
+      `🤖 <b>Model đang sử dụng:</b> <code>${testResult.model}</code>`,
+      `🔑 <b>API Key Status:</b> <code>Đã cấu hình hợp lệ</code>`,
+      '',
+      `💬 <b>Phản hồi thử nghiệm từ AI:</b> <i>"${escapeHtml(testResult.text)}"</i>`
+    ].join('\n'), { parse_mode: 'HTML' });
+  } else {
+    return ctx.reply([
+      '❌ <b>LỖI KẾT NỐI GEMINI AI API!</b>',
+      '',
+      `⚠️ <b>Chi tiết lỗi:</b> <code>${escapeHtml(testResult.error)}</code>`,
+      '',
+      '👉 <b>Các nguyên nhân & Cách khắc phục:</b>',
+      '1. Biến <code>GEMINI_API_KEY</code> chưa được nhập trên Dokploy -> Environment Variables.',
+      '2. API Key lấy từ <a href="https://aistudio.google.com/">Google AI Studio</a> chưa được kích hoạt hoặc đã hết quota.',
+      '3. Cần vào Dokploy bấm <b>Redeploy</b> ứng dụng để cập nhật lại biến môi trường.'
+    ].join('\n'), { parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
+  }
+});
 
 // Lệnh quét thủ công danh sách website
 bot.command('research', async (ctx) => {
@@ -361,11 +376,10 @@ async function runTitleSearch(ctx, queryStr, siteFilter = null) {
       if (item.snippet) lines.push(`   <i>${escapeHtml(item.snippet)}</i>`);
       lines.push('');
 
-      // Đính kèm Nút Tải về Telegram trực tiếp
       const encodedUrl = Buffer.from(item.url).toString('base64url');
       if (index < 5 && encodedUrl.length < 60) {
         inline_keyboard.push([
-          { text: `📥 Tải Kếtt quả ${index + 1} về Telegram`, callback_data: `dl_link:${encodedUrl}` }
+          { text: `📥 Tải Kết quả ${index + 1} về Telegram`, callback_data: `dl_link:${encodedUrl}` }
         ]);
       }
     });
@@ -426,6 +440,7 @@ function buildListKeyboard() {
           { text: '🗑️ Xóa Web', callback_data: 'act:del_menu' }
         ],
         [
+          { text: '🤖 Kiểm Tra AI', callback_data: 'act:aicheck' },
           { text: '⚡ Quét Báo Cáo Ngay (07:00 AM)', callback_data: 'act:research' }
         ]
       ]
@@ -616,6 +631,37 @@ bot.command('del', handleDeleteTarget);
 bot.command('deltarget', handleDeleteTarget);
 
 // Callbacks xử lý sự kiện bấm Nút (Bubble Action Callbacks)
+
+// Action callback cho /ai check
+bot.action('act:aicheck', async (ctx) => {
+  await ctx.answerCbQuery();
+  const statusMsg = await ctx.reply('🤖 Đang kiểm tra kết nối tới Google Gemini AI API...', { parse_mode: 'HTML' });
+
+  const testResult = await callGeminiApi('Hãy trả lời duy nhất câu: "AI Gemini đang hoạt động mượt mà!"');
+  await ctx.deleteMessage(statusMsg.message_id).catch(() => {});
+
+  if (testResult.success) {
+    return ctx.reply([
+      '✅ <b>KẾT NỐI GEMINI AI HOẠT ĐỘNG BÌNH THƯỜNG!</b>',
+      '',
+      `🤖 <b>Model đang sử dụng:</b> <code>${testResult.model}</code>`,
+      `🔑 <b>API Key Status:</b> <code>Đã cấu hình hợp lệ</code>`,
+      '',
+      `💬 <b>Phản hồi thử nghiệm từ AI:</b> <i>"${escapeHtml(testResult.text)}"</i>`
+    ].join('\n'), { parse_mode: 'HTML' });
+  } else {
+    return ctx.reply([
+      '❌ <b>LỖI KẾT NỐI GEMINI AI API!</b>',
+      '',
+      `⚠️ <b>Chi tiết lỗi:</b> <code>${escapeHtml(testResult.error)}</code>`,
+      '',
+      '👉 <b>Các nguyên nhân & Cách khắc phục:</b>',
+      '1. Biến <code>GEMINI_API_KEY</code> chưa được nhập trên Dokploy -> Environment Variables.',
+      '2. API Key lấy từ <a href="https://aistudio.google.com/">Google AI Studio</a> chưa được kích hoạt hoặc đã hết quota.',
+      '3. Cần vào Dokploy bấm <b>Redeploy</b> ứng dụng để cập nhật lại biến môi trường.'
+    ].join('\n'), { parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
+  }
+});
 
 // Callback Tải trực tiếp về Telegram
 bot.action(/^dl_link:(.+)$/, async (ctx) => {
