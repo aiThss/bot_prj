@@ -48,7 +48,7 @@ const httpConfig = {
   httpsAgent: new https.Agent({ rejectUnauthorized: false })
 };
 
-// Tự động truy vấn ListModels từ Google AI Studio để lấy chính xác Model khả dụng cho API Key
+// Tự động truy vấn ListModels từ Google AI Studio & Thử tất cả Model khả dụng (Tự nhảy Model khi bị Rate Limit)
 async function callGeminiApi(prompt) {
   const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
   if (!GEMINI_API_KEY) {
@@ -56,7 +56,7 @@ async function callGeminiApi(prompt) {
   }
 
   try {
-    // 1. Tự động lấy danh sách Model khả dụng được gán cho API Key của người dùng
+    // 1. Tự động lấy danh sách Model khả dụng từ Google AI Studio
     const listRes = await axios.get(
       `https://generativelanguage.googleapis.com/v1beta/models?key=${GEMINI_API_KEY}`,
       { timeout: 8000 }
@@ -71,27 +71,40 @@ async function callGeminiApi(prompt) {
       return { success: false, error: 'API Key của bạn không có quyền truy cập mô hình generateContent nào từ Google.' };
     }
 
-    // Ưu tiên chọn model 'flash' khả dụng đầu tiên (ví dụ: gemini-1.5-flash-8b, gemini-1.5-flash, v.v.), hoặc lấy model khả dụng đầu tiên
-    const targetModel = validModels.find(m => m.includes('flash')) || validModels[0];
+    // Sắp xếp ưu tiên: gemini-1.5-flash -> gemini-1.5-flash-8b -> các model khác
+    validModels.sort((a, b) => {
+      if (a.includes('1.5-flash')) return -1;
+      if (b.includes('1.5-flash')) return 1;
+      return 0;
+    });
 
-    // 2. Thực hiện sinh nội dung với Model khả dụng chính xác từ Google
-    const response = await axios.post(
-      `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${GEMINI_API_KEY}`,
-      { contents: [{ parts: [{ text: prompt }] }] },
-      { headers: { 'Content-Type': 'application/json' }, timeout: 12000 }
-    );
+    let lastError = '';
 
-    const generatedText = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (generatedText) {
-      return { success: true, text: generatedText.trim(), model: targetModel };
+    // 2. Thử lần lượt các Model khả dụng (Tự động nhảy sang model khác nếu bị dính Rate Limit Quota)
+    for (const targetModel of validModels) {
+      try {
+        const response = await axios.post(
+          `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${GEMINI_API_KEY}`,
+          { contents: [{ parts: [{ text: prompt }] }] },
+          { headers: { 'Content-Type': 'application/json' }, timeout: 12000 }
+        );
+
+        const generatedText = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (generatedText) {
+          return { success: true, text: generatedText.trim(), model: targetModel };
+        }
+      } catch (err) {
+        lastError = err.response?.data?.error?.message || err.message;
+        console.warn(`Model ${targetModel} gặp lỗi/rate limit:`, lastError);
+      }
     }
+
+    return { success: false, error: lastError || 'Tất cả model Gemini khả dụng đều dính Rate Limit.' };
   } catch (err) {
     const errorMsg = err.response?.data?.error?.message || err.message;
     console.error('Lỗi khi gọi Google Gemini API:', errorMsg);
     return { success: false, error: errorMsg };
   }
-
-  return { success: false, error: 'Không nhận được phản hồi từ Gemini AI API.' };
 }
 
 // Tự động theo vết link rút gọn (như bit.ly/hh3d) để lấy URL / Domain đích thực tế
