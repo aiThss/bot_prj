@@ -1,0 +1,26 @@
+{
+  "name": "bot_prj",
+  "version": "1.0.0",
+  "description": "Telegram Bot for GitHub Commit Push Notifications & AI Summarization",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "github",
+    "webhook",
+    "gemini",
+    "notifications"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.7.9",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "telegraf": "^4.16.3"
+  }
+}
