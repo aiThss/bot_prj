@@ -150,10 +150,12 @@ app.post('/webhook/github', async (req, res) => {
 
 // Bot Command Menu & Handlers
 const BOT_COMMANDS = [
-  { command: 'research', description: 'Quét & kiểm tra các web phim/truyện ngay lập tức' },
-  { command: 'targets', description: 'Danh sách website đang theo dõi' },
+  { command: 'add', description: 'Thêm web mới vào danh sách theo dõi: /add <url>' },
+  { command: 'del', description: 'Xóa web khỏi danh sách theo dõi: /del <tên_hoặc_id>' },
+  { command: 'list', description: 'Danh sách website đang theo dõi' },
+  { command: 'research', description: 'Quét & kiểm tra ngay danh sách website' },
   { command: 'id', description: 'Xem Telegram Chat ID của bạn' },
-  { command: 'ping', description: 'Kiểm tra trạng thái hoạt động của bot' },
+  { command: 'ping', description: 'Kiểm tra phản hồi bot' },
   { command: 'help', description: 'Hướng dẫn sử dụng bot' }
 ];
 
@@ -164,11 +166,14 @@ const helpText = [
   '1. Báo Git Push commit từ GitHub bằng AI Gemini.',
   '2. 🌐 Quét & research tự động danh sách web phim/truyện vào <b>07:00 AM hàng ngày</b> (cập nhật domain mới nhất khi sập và tập/chương mới).',
   '',
-  '📌 <b>Các lệnh khả dụng:</b>',
-  '• <b>/research</b> — Chạy quét ngay danh sách website',
-  '• <b>/targets</b> — Xem danh sách các website đang được theo dõi',
-  '• <b>/addtarget &lt;tên&gt; &lt;url&gt; [từ_khóa_search]</b> — Thêm web mới cần theo dõi',
-  '• <b>/deltarget &lt;tên_hoặc_id&gt;</b> — Xóa web khỏi danh sách theo dõi',
+  '📌 <b>Các lệnh quản lý Web:</b>',
+  '• <b>/add &lt;url&gt;</b> — Thêm nhanh link web (VD: <code>/add https://phimmoi.com</code>)',
+  '• <b>/add &lt;tên&gt; &lt;url&gt;</b> — Thêm web có tên tùy chỉnh',
+  '• <b>/del &lt;tên_hoặc_id&gt;</b> — Xóa web khỏi danh sách theo dõi',
+  '• <b>/list</b> (hoặc <b>/targets</b>) — Xem danh sách các website đang theo dõi',
+  '• <b>/research</b> — Chạy quét & báo cáo danh sách ngay lập tức',
+  '',
+  '📌 <b>Các lệnh khác:</b>',
   '• <b>/id</b> — Xem Chat ID hiện tại của bạn',
   '• <b>/ping</b> — Kiểm tra phản hồi bot'
 ].join('\n');
@@ -202,11 +207,11 @@ bot.command('research', async (ctx) => {
   await runWebsiteResearch(bot, [String(ctx.chat.id)]);
 });
 
-// Lệnh xem danh sách website theo dõi
-bot.command('targets', (ctx) => {
+// Lệnh xem danh sách website theo dõi (/list hoặc /targets)
+function handleListTargets(ctx) {
   const targets = loadTargets();
   if (targets.length === 0) {
-    return ctx.reply('⚠️ Danh sách theo dõi hiện đang trống. Dùng /addtarget để thêm web mới.');
+    return ctx.reply('⚠️ Danh sách theo dõi hiện đang trống. Dùng <code>/add https://domain.com</code> để thêm web mới.', { parse_mode: 'HTML' });
   }
 
   const lines = ['🌐 <b>Danh sách website đang theo dõi:</b>', ''];
@@ -217,51 +222,109 @@ bot.command('targets', (ctx) => {
     lines.push('');
   });
 
-  lines.push('💡 <b>Cú pháp thêm web:</b>');
-  lines.push('<code>/addtarget PhimMoi https://phimmoi.com phimmoi domain mới nhất</code>');
+  lines.push('💡 <b>Cú pháp thêm web nhanh:</b>');
+  lines.push('<code>/add https://phimmoi.com</code>');
+  lines.push('<code>/add PhimMoi https://phimmoi.com</code>');
   lines.push('');
   lines.push('💡 <b>Cú pháp xóa web:</b>');
-  lines.push('<code>/deltarget phim1</code>');
+  lines.push('<code>/del phim1</code>');
 
   return ctx.reply(lines.join('\n'), { parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
-});
+}
 
-// Lệnh thêm website mới
-bot.command('addtarget', (ctx) => {
-  const text = String(ctx.message?.text || '').trim();
-  const parts = text.split(/\s+/).slice(1);
+bot.command('list', handleListTargets);
+bot.command('targets', handleListTargets);
 
-  if (parts.length < 2) {
-    return ctx.reply('⚠️ Cú pháp: <code>/addtarget &lt;tên_web&gt; &lt;url&gt; [từ_khóa_search]</code>\nVí dụ: <code>/addtarget PhimMoi https://phimmoi.com phimmoi domain mới nhất</code>', { parse_mode: 'HTML' });
+// Lệnh thêm website mới (/add hoặc /addtarget)
+const ADD_INPUT_PROMPT = '🌐 Nhập URL hoặc [Tên Web + URL] cần thêm vào danh sách theo dõi:';
+
+function parseAddArguments(inputStr) {
+  const parts = inputStr.trim().split(/\s+/);
+  if (parts.length === 0 || !parts[0]) return null;
+
+  let name = '';
+  let url = '';
+  let searchKeyword = '';
+
+  if (/^(https?:\/\/|[a-z0-9-]+\.[a-z]{2,})/i.test(parts[0])) {
+    url = parts[0];
+    if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+    try {
+      const parsed = new URL(url);
+      name = parsed.hostname.replace(/^www\./, '').split('.')[0];
+      name = name.charAt(0).toUpperCase() + name.slice(1);
+    } catch (_) {
+      name = parts[0];
+    }
+    searchKeyword = parts.slice(1).join(' ') || `${name} domain moi nhat`;
+  } else if (parts.length >= 2) {
+    name = parts[0];
+    url = parts[1];
+    if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+    searchKeyword = parts.slice(2).join(' ') || `${name} domain moi nhat`;
+  } else {
+    name = parts[0];
+    url = 'https://' + parts[0] + (parts[0].includes('.') ? '' : '.com');
+    searchKeyword = `${name} domain moi nhat`;
   }
 
-  const name = parts[0];
-  let targetUrl = parts[1];
-  if (!/^https?:\/\//i.test(targetUrl)) targetUrl = 'https://' + targetUrl;
-  const searchKeyword = parts.slice(2).join(' ') || `${name} domain moi nhat`;
+  return { name, url, searchKeyword };
+}
+
+async function runAddTarget(ctx, inputStr) {
+  const parsed = parseAddArguments(inputStr);
+  if (!parsed || !parsed.url) {
+    return ctx.reply('⚠️ Cú pháp không hợp lệ. Ví dụ:\n• <code>/add https://phimmoi.com</code>\n• <code>/add PhimMoi https://phimmoi.com</code>', { parse_mode: 'HTML' });
+  }
 
   const targets = loadTargets();
   const newId = 'web_' + Date.now().toString(36);
 
   targets.push({
     id: newId,
-    name: name,
-    url: targetUrl,
-    searchKeyword: searchKeyword,
+    name: parsed.name,
+    url: parsed.url,
+    searchKeyword: parsed.searchKeyword,
     enabled: true
   });
 
   saveTargets(targets);
-  return ctx.reply(`✅ Đã thêm website <b>${escapeHtml(name)}</b> vào danh sách theo dõi thành công!`, { parse_mode: 'HTML' });
-});
 
-// Lệnh xóa website
-bot.command('deltarget', (ctx) => {
+  return ctx.reply([
+    '✅ <b>Đã thêm website vào danh sách theo dõi thành công!</b>',
+    '',
+    `📌 <b>Tên:</b> ${escapeHtml(parsed.name)} (ID: <code>${newId}</code>)`,
+    `🌐 <b>URL:</b> ${escapeHtml(parsed.url)}`,
+    `🔍 <b>Từ khóa tìm kiếm mirror:</b> <i>${escapeHtml(parsed.searchKeyword)}</i>`
+  ].join('\n'), { parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
+}
+
+async function handleAddTarget(ctx) {
+  const text = String(ctx.message?.text || '').trim();
+  const firstSpaceIndex = text.indexOf(' ');
+  const args = firstSpaceIndex === -1 ? '' : text.slice(firstSpaceIndex + 1).trim();
+
+  if (args) return runAddTarget(ctx, args);
+
+  return ctx.reply(ADD_INPUT_PROMPT, {
+    reply_markup: {
+      force_reply: true,
+      selective: true,
+      input_field_placeholder: 'Ví dụ: https://phimmoi.com'
+    }
+  });
+}
+
+bot.command('add', handleAddTarget);
+bot.command('addtarget', handleAddTarget);
+
+// Lệnh xóa website (/del hoặc /deltarget)
+function handleDeleteTarget(ctx) {
   const text = String(ctx.message?.text || '').trim();
   const query = text.split(/\s+/)[1];
 
   if (!query) {
-    return ctx.reply('⚠️ Cú pháp: <code>/deltarget &lt;tên_hoặc_id&gt;</code>', { parse_mode: 'HTML' });
+    return ctx.reply('⚠️ Cú pháp: <code>/del &lt;tên_hoặc_id&gt;</code>', { parse_mode: 'HTML' });
   }
 
   let targets = loadTargets();
@@ -274,6 +337,24 @@ bot.command('deltarget', (ctx) => {
 
   saveTargets(targets);
   return ctx.reply(`✅ Đã xóa website khỏi danh sách theo dõi thành công!`);
+}
+
+bot.command('del', handleDeleteTarget);
+bot.command('deltarget', handleDeleteTarget);
+
+// Xử lý ForceReply tin nhắn
+bot.on('text', async (ctx, next) => {
+  const replyText = String(ctx.message?.reply_to_message?.text || '').trim();
+  const inputText = String(ctx.message?.text || '').trim();
+
+  if (replyText === ADD_INPUT_PROMPT) {
+    if (!inputText || inputText.startsWith('/')) {
+      return ctx.reply('⚠️ Hãy nhập URL hoặc tên website cần theo dõi.');
+    }
+    return runAddTarget(ctx, inputText);
+  }
+
+  return next();
 });
 
 // Configure Telegram command menu
