@@ -1,12 +1,21 @@
-# bot_prj - Telegram Bot Notification Service
+# bot_prj - Telegram Commit & Website Research Bot
 
-Telegram Bot chuyên nhận Webhook từ GitHub khi có Git Push, tự động tóm tắt danh sách commit bằng AI (Google Gemini) và gửi thông báo trực tiếp đến Telegram.
+Telegram Bot chuyên nhận Webhook từ GitHub khi có Git Push (tóm tắt bằng Gemini AI) và tự động Research/Kiểm tra trạng thái domain web phim/truyện hàng ngày lúc 07:00 AM.
 
 ## 🚀 Tính năng chính
-- 🔔 Nhận GitHub Push Webhook (`/webhook/github`).
-- 🤖 Tóm tắt thay đổi trong các commit bằng AI Gemini (tiếng Việt).
-- 💬 Gửi tin nhắn đến Telegram cá nhân hoặc nhóm chat.
-- 🆔 Lệnh `/id` hỗ trợ tra cứu Chat ID nhanh chóng.
+- 🔔 Nhận GitHub Push Webhook (`/webhook/github`) & tóm tắt AI.
+- 🕵️‍♂️ Research & Quét tự động danh sách web phim/truyện định kỳ lúc **07:00 AM** hàng ngày.
+- 🔄 Tự động phát hiện & tìm kiếm **domain thay thế mới nhất** qua DuckDuckGo khi domain cũ bị sập/chặn.
+- 🎬 Trích xuất danh sách tập phim / chương truyện mới nhất.
+- 💬 Gửi báo cáo định kỳ về Telegram cá nhân hoặc nhóm chat.
+
+## 📌 Các lệnh Telegram:
+- `/research`: Chạy quét & kiểm tra ngay danh sách website.
+- `/targets`: Xem danh sách website đang được theo dõi.
+- `/addtarget <tên> <url> [từ_khóa]`: Thêm website mới vào danh sách.
+- `/deltarget <tên_hoặc_id>`: Xóa website khỏi danh sách theo dõi.
+- `/id`: Xem Chat ID Telegram của bạn.
+- `/ping`: Kiểm tra độ phản hồi của bot.
 
 ## 🛠️ Biến môi trường (Environment Variables)
 
@@ -17,27 +26,9 @@ Telegram Bot chuyên nhận Webhook từ GitHub khi có Git Push, tự động t
 | `GEMINI_API_KEY` | API Key từ Google AI Studio | Không | `AIzaSy...` |
 | `PORT` | Cổng HTTP Server cho Webhook | Không (mặc định 3000) | `3000` |
 
-## 🐳 Triển khai với Dokploy (Docker / Git Repository)
+## 🐳 Triển khai với Dokploy (Docker)
 
 1. Tạo Application mới trên Dokploy.
-2. Chọn **Provider: GitHub**, chọn Repo `aiThss/bot_prj`, branch `main`.
-3. Chọn Build Type: **Dockerfile** (hoặc Nixpacks/Node.js).
-4. Thêm các **Environment Variables**:
-   ```env
-   BOT_TOKEN=...
-   ADMIN_CHAT_IDS=...
-   GEMINI_API_KEY=...
-   PORT=3000
-   ```
-5. Đặt **Port** thành `3000`.
-6. Cấu hình **Domain** trong Dokploy (VD: `bot-prj.yourdomain.com`).
-7. Nhấn **Deploy**.
-
-## ⚡ Cấu hình Webhook Báo Commit Tự Động (Tất Cả Repositories)
-
-### 🌟 Dùng GitHub App (Tốt nhất cho Tài Khoản Cá Nhân)
-1. Vào **GitHub Developer Settings**: [github.com/settings/apps](https://github.com/settings/apps).
-2. Nhấn vào GitHub App của bạn (Ví dụ: `tele-noti-bot`).
-3. Trong mục **Webhook**, cập nhật **Webhook URL**: `https://bot-prj.yourdomain.com/webhook/github`.
-4. Đảm bảo đánh dấu chọn **Active** và nhấn **Save changes**.
-5. Chọn tab **Install App** -> Đảm bảo chọn **All repositories** để tự động báo commit cho toàn bộ các repo hiện tại và tương lai.
+2. Nguồn Repo `aiThss/bot_prj`, branch `main`, Build Type `Dockerfile`.
+3. Đặt các Environment Variables và Port `3000`.
+4. Deploy ứng dụng.

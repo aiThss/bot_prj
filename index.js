@@ -3,6 +3,8 @@ const { Telegraf } = require('telegraf');
 const axios = require('axios');
 require('dotenv').config();
 
+const { loadTargets, saveTargets, runWebsiteResearch, initScheduler } = require('./tracker');
+
 // Validate required environment variables
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_CHAT_IDS = [...new Set(
@@ -148,27 +150,27 @@ app.post('/webhook/github', async (req, res) => {
 
 // Bot Command Menu & Handlers
 const BOT_COMMANDS = [
+  { command: 'research', description: 'Quét & kiểm tra các web phim/truyện ngay lập tức' },
+  { command: 'targets', description: 'Danh sách website đang theo dõi' },
   { command: 'id', description: 'Xem Telegram Chat ID của bạn' },
   { command: 'ping', description: 'Kiểm tra trạng thái hoạt động của bot' },
-  { command: 'help', description: 'Hướng dẫn cấu hình Webhook' }
+  { command: 'help', description: 'Hướng dẫn sử dụng bot' }
 ];
 
 const helpText = [
-  '🤖 <b>Project Commit Notification Bot</b>',
+  '🤖 <b>Project & Website Research Bot</b>',
   '',
-  'Bot này có nhiệm vụ lắng nghe Webhook từ GitHub khi có Git Push và gửi tóm tắt commit qua Telegram bằng AI Gemini.',
+  '📌 <b>Chức năng chính:</b>',
+  '1. Báo Git Push commit từ GitHub bằng AI Gemini.',
+  '2. 🌐 Quét & research tự động danh sách web phim/truyện vào <b>07:00 AM hàng ngày</b> (cập nhật domain mới nhất khi sập và tập/chương mới).',
   '',
   '📌 <b>Các lệnh khả dụng:</b>',
+  '• <b>/research</b> — Chạy quét ngay danh sách website',
+  '• <b>/targets</b> — Xem danh sách các website đang được theo dõi',
+  '• <b>/addtarget &lt;tên&gt; &lt;url&gt; [từ_khóa_search]</b> — Thêm web mới cần theo dõi',
+  '• <b>/deltarget &lt;tên_hoặc_id&gt;</b> — Xóa web khỏi danh sách theo dõi',
   '• <b>/id</b> — Xem Chat ID hiện tại của bạn',
-  '• <b>/ping</b> — Kiểm tra phản hồi bot',
-  '• <b>/help</b> — Xem menu hướng dẫn',
-  '',
-  '⚙️ <b>Cấu hình Webhook trên GitHub:</b>',
-  '1. Vào Repository GitHub -> <b>Settings</b> -> <b>Webhooks</b> -> <b>Add webhook</b>',
-  '2. <b>Payload URL:</b> <code>https://domain-cua-ban/webhook/github</code>',
-  '3. <b>Content type:</b> <code>application/json</code>',
-  '4. <b>Which events:</b> Chọn <i>Just the push event</i>',
-  '5. Nhấn <b>Add webhook</b>.'
+  '• <b>/ping</b> — Kiểm tra phản hồi bot'
 ].join('\n');
 
 bot.start((ctx) => ctx.reply(helpText, { parse_mode: 'HTML' }));
@@ -188,14 +190,91 @@ bot.command('id', async (ctx) => {
     'Chat ID: <code>' + escapeHtml(chatId) + '</code>',
     'User ID: <code>' + escapeHtml(userId) + '</code>',
     '',
-    status,
-    '',
-    'Cấu hình ENV Dokploy / Docker:',
-    '<code>ADMIN_CHAT_IDS=' + escapeHtml(chatId) + '</code>'
+    status
   ].join('\n'), { parse_mode: 'HTML' });
 });
 
-bot.command('ping', (ctx) => ctx.reply('🏓 Pong! Bot commit notification đang hoạt động bình thường.'));
+bot.command('ping', (ctx) => ctx.reply('🏓 Pong! Bot đang hoạt động bình thường.'));
+
+// Lệnh quét thủ công danh sách website
+bot.command('research', async (ctx) => {
+  await ctx.reply('🔎 Đang tiến hành quét và nghiên cứu các website trong danh sách...');
+  await runWebsiteResearch(bot, [String(ctx.chat.id)]);
+});
+
+// Lệnh xem danh sách website theo dõi
+bot.command('targets', (ctx) => {
+  const targets = loadTargets();
+  if (targets.length === 0) {
+    return ctx.reply('⚠️ Danh sách theo dõi hiện đang trống. Dùng /addtarget để thêm web mới.');
+  }
+
+  const lines = ['🌐 <b>Danh sách website đang theo dõi:</b>', ''];
+  targets.forEach((t, i) => {
+    lines.push(`${i + 1}. <b>${escapeHtml(t.name)}</b> (ID: <code>${escapeHtml(t.id)}</code>)`);
+    lines.push(`   • URL: ${escapeHtml(t.url)}`);
+    if (t.searchKeyword) lines.push(`   • Từ khóa tìm kiếm domain thay thế: <i>${escapeHtml(t.searchKeyword)}</i>`);
+    lines.push('');
+  });
+
+  lines.push('💡 <b>Cú pháp thêm web:</b>');
+  lines.push('<code>/addtarget PhimMoi https://phimmoi.com phimmoi domain mới nhất</code>');
+  lines.push('');
+  lines.push('💡 <b>Cú pháp xóa web:</b>');
+  lines.push('<code>/deltarget phim1</code>');
+
+  return ctx.reply(lines.join('\n'), { parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
+});
+
+// Lệnh thêm website mới
+bot.command('addtarget', (ctx) => {
+  const text = String(ctx.message?.text || '').trim();
+  const parts = text.split(/\s+/).slice(1);
+
+  if (parts.length < 2) {
+    return ctx.reply('⚠️ Cú pháp: <code>/addtarget &lt;tên_web&gt; &lt;url&gt; [từ_khóa_search]</code>\nVí dụ: <code>/addtarget PhimMoi https://phimmoi.com phimmoi domain mới nhất</code>', { parse_mode: 'HTML' });
+  }
+
+  const name = parts[0];
+  let targetUrl = parts[1];
+  if (!/^https?:\/\//i.test(targetUrl)) targetUrl = 'https://' + targetUrl;
+  const searchKeyword = parts.slice(2).join(' ') || `${name} domain moi nhat`;
+
+  const targets = loadTargets();
+  const newId = 'web_' + Date.now().toString(36);
+
+  targets.push({
+    id: newId,
+    name: name,
+    url: targetUrl,
+    searchKeyword: searchKeyword,
+    enabled: true
+  });
+
+  saveTargets(targets);
+  return ctx.reply(`✅ Đã thêm website <b>${escapeHtml(name)}</b> vào danh sách theo dõi thành công!`, { parse_mode: 'HTML' });
+});
+
+// Lệnh xóa website
+bot.command('deltarget', (ctx) => {
+  const text = String(ctx.message?.text || '').trim();
+  const query = text.split(/\s+/)[1];
+
+  if (!query) {
+    return ctx.reply('⚠️ Cú pháp: <code>/deltarget &lt;tên_hoặc_id&gt;</code>', { parse_mode: 'HTML' });
+  }
+
+  let targets = loadTargets();
+  const initialLength = targets.length;
+  targets = targets.filter(t => t.id !== query && t.name.toLowerCase() !== query.toLowerCase());
+
+  if (targets.length === initialLength) {
+    return ctx.reply(`⚠️ Không tìm thấy website nào khớp với "${escapeHtml(query)}".`);
+  }
+
+  saveTargets(targets);
+  return ctx.reply(`✅ Đã xóa website khỏi danh sách theo dõi thành công!`);
+});
 
 // Configure Telegram command menu
 Promise.all([
@@ -212,9 +291,10 @@ const server = app.listen(PORT, () => {
   console.log(`Express server running on port ${PORT}`);
 });
 
-// Launch Telegraf Bot
+// Launch Telegraf Bot & Cron Scheduler
 bot.launch().then(() => {
   console.log('Telegraf bot launched in polling mode');
+  initScheduler(bot, ADMIN_CHAT_IDS);
 }).catch((err) => {
   console.error('Failed to launch Telegraf bot:', err);
 });
