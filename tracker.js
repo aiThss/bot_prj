@@ -56,7 +56,6 @@ async function callGeminiApi(prompt) {
   }
 
   try {
-    // 1. Tự động lấy danh sách Model khả dụng từ Google AI Studio
     const listRes = await axios.get(
       `https://generativelanguage.googleapis.com/v1beta/models?key=${GEMINI_API_KEY}`,
       { timeout: 8000 }
@@ -71,7 +70,6 @@ async function callGeminiApi(prompt) {
       return { success: false, error: 'API Key của bạn không có quyền truy cập mô hình generateContent nào từ Google.' };
     }
 
-    // Sắp xếp ưu tiên: gemini-1.5-flash -> gemini-1.5-flash-8b -> các model khác
     validModels.sort((a, b) => {
       if (a.includes('1.5-flash')) return -1;
       if (b.includes('1.5-flash')) return 1;
@@ -80,7 +78,6 @@ async function callGeminiApi(prompt) {
 
     let lastError = '';
 
-    // 2. Thử lần lượt các Model khả dụng (Tự động nhảy sang model khác nếu bị dính Rate Limit Quota)
     for (const targetModel of validModels) {
       try {
         const response = await axios.post(
@@ -151,7 +148,7 @@ async function searchLatestMirrorDomain(searchKeyword) {
   }
 }
 
-// Tìm kiếm trực tiếp trên thanh tìm kiếm nội bộ của trang web (Direct In-Site Search)
+// Tìm kiếm trực tiếp trên thanh tìm kiếm nội bộ của trang web (Direct In-Site Search & Episode Resolution)
 async function searchDirectOnSite(baseUrl, query) {
   const results = [];
   const encodedQuery = encodeURIComponent(query);
@@ -190,9 +187,39 @@ async function searchDirectOnSite(baseUrl, query) {
       });
 
       if (itemsSet.size > 0) {
-        Array.from(itemsSet).slice(0, 5).forEach(item => {
+        const rawItems = Array.from(itemsSet).slice(0, 5);
+        for (const item of rawItems) {
+          // Nếu link trỏ vào trang phim chung (không có thông tin tập cụ thể), tự động lấy tập mới nhất
+          if (!/(tap-\d+|episode-\d+|\d+\.html|xem-phim)/i.test(item.url)) {
+            try {
+              const pageRes = await axios.get(item.url, httpConfig);
+              const page$ = cheerio.load(pageRes.data);
+              const epLinks = [];
+              page$('a[href]').each((_, el) => {
+                const epText = page$(el).text().replace(/\s+/g, ' ').trim();
+                const epHref = page$(el).attr('href');
+                if (epHref && /(tập|tap|episode|\b\d+\b)/i.test(epHref)) {
+                  try {
+                    const absEpUrl = new URL(epHref, item.url).href;
+                    const numMatch = (epText + ' ' + epHref).match(/(?:tập|tap|episode|-|\b)(\d+)\b/i);
+                    const epNum = numMatch ? parseInt(numMatch[1], 10) : 0;
+                    epLinks.push({ title: epText || `Tập ${epNum}`, url: absEpUrl, epNum });
+                  } catch (_) {}
+                }
+              });
+              if (epLinks.length > 0) {
+                epLinks.sort((a, b) => b.epNum - a.epNum);
+                const bestEp = epLinks[0];
+                results.push({
+                  title: `${item.title} (${bestEp.title})`,
+                  url: bestEp.url
+                });
+                continue;
+              }
+            } catch (_) {}
+          }
           results.push(item);
-        });
+        }
         break;
       }
     } catch (_) {}

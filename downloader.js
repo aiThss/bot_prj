@@ -20,27 +20,59 @@ const escapeHtml = (value) => String(value || '')
   .replace(/</g, '&lt;')
   .replace(/>/g, '&gt;');
 
+// Tìm kiếm tập mới nhất hoặc nút xem phim trên trang thông tin phim
+async function findLatestEpisodeUrl($, baseUrl) {
+  const episodeLinks = [];
+
+  $('a[href]').each((_, el) => {
+    const text = $(el).text().replace(/\s+/g, ' ').trim();
+    const href = $(el).attr('href');
+
+    if (!href || href.startsWith('#') || href.startsWith('javascript:')) return;
+
+    // Tìm các đường dẫn có chứa tập phim (Tập 93, Tập 94, xem-phim, tap-...)
+    if (/(tập|tap|episode|xem-phim|\b\d+\b)/i.test(href) || /(tập|tap|episode|\b\d+\b)/i.test(text)) {
+      try {
+        const absUrl = new URL(href, baseUrl).href;
+        const numMatch = (text + ' ' + href).match(/(?:tập|tap|episode|-|\b)(\d+)\b/i);
+        const epNum = numMatch ? parseInt(numMatch[1], 10) : 0;
+        episodeLinks.push({ title: text || `Tập ${epNum}`, url: absUrl, epNum });
+      } catch (_) {}
+    }
+  });
+
+  if (episodeLinks.length === 0) return null;
+
+  // Sắp xếp chọn tập có số tập cao nhất (Tập mới nhất)
+  episodeLinks.sort((a, b) => b.epNum - a.epNum);
+  return episodeLinks[0];
+}
+
 // Trích xuất Media (Video / Tất cả ảnh tập truyện) từ URL trang web
 async function extractMediaFromUrl(targetUrl) {
   let urlStr = String(targetUrl || '').trim();
   if (!/^https?:\/\//i.test(urlStr)) urlStr = 'https://' + urlStr;
 
   try {
-    const response = await axios.get(urlStr, httpConfig);
-    const resolvedUrl = response.request?.res?.responseUrl || urlStr;
-    const html = response.data;
-    const $ = cheerio.load(html);
+    let response = await axios.get(urlStr, httpConfig);
+    let resolvedUrl = response.request?.res?.responseUrl || urlStr;
+    let html = response.data;
+    let $ = cheerio.load(html);
 
-    const title = $('title').text().replace(/\s+/g, ' ').trim() || 'Media Telegram';
+    let title = $('title').text().replace(/\s+/g, ' ').trim() || 'Media Telegram';
 
-    // 1. Kiểm tra Video Tags & Embed Source (.mp4, .m3u8, video src)
+    // 1. Kiểm tra Video Tags & Embed Source (.mp4, .m3u8, video src, iframe)
     let videoUrl = null;
+    let iframeUrl = null;
+
     $('video source, video, iframe').each((_, el) => {
       const src = $(el).attr('src') || $(el).attr('data-src');
-      if (src && (src.includes('.mp4') || src.includes('.m3u8'))) {
-        try {
-          videoUrl = new URL(src, resolvedUrl).href;
-        } catch (_) {}
+      if (src) {
+        if (src.includes('.mp4') || src.includes('.m3u8')) {
+          try { videoUrl = new URL(src, resolvedUrl).href; } catch (_) {}
+        } else if (src.includes('embed') || src.includes('player') || src.includes('stream') || src.includes('xem')) {
+          try { iframeUrl = new URL(src, resolvedUrl).href; } catch (_) {}
+        }
       }
     });
 
@@ -49,6 +81,39 @@ async function extractMediaFromUrl(targetUrl) {
       const m3u8Match = html.match(/https?:\/\/[^"'\s\\]+\.m3u8[^"'\s\\]*/i);
       if (mp4Match) videoUrl = mp4Match[0];
       else if (m3u8Match) videoUrl = m3u8Match[0];
+    }
+
+    // Nếu chưa tìm thấy video trực tiếp và đang ở trang thông tin phim chung -> Thử truy cập vào tập mới nhất
+    if (!videoUrl && !iframeUrl) {
+      const latestEp = await findLatestEpisodeUrl($, resolvedUrl);
+      if (latestEp && latestEp.url !== resolvedUrl) {
+        try {
+          console.log(`[Media Extractor] Tự động trích xuất tập mới nhất: ${latestEp.title} (${latestEp.url})`);
+          const epResponse = await axios.get(latestEp.url, httpConfig);
+          resolvedUrl = epResponse.request?.res?.responseUrl || latestEp.url;
+          html = epResponse.data;
+          $ = cheerio.load(html);
+          title = $('title').text().replace(/\s+/g, ' ').trim() || `${title} - ${latestEp.title}`;
+
+          $('video source, video, iframe').each((_, el) => {
+            const src = $(el).attr('src') || $(el).attr('data-src');
+            if (src) {
+              if (src.includes('.mp4') || src.includes('.m3u8')) {
+                try { videoUrl = new URL(src, resolvedUrl).href; } catch (_) {}
+              } else if (src.includes('embed') || src.includes('player') || src.includes('stream') || src.includes('xem')) {
+                try { iframeUrl = new URL(src, resolvedUrl).href; } catch (_) {}
+              }
+            }
+          });
+
+          if (!videoUrl) {
+            const mp4Match = html.match(/https?:\/\/[^"'\s\\]+\.mp4[^"'\s\\]*/i);
+            const m3u8Match = html.match(/https?:\/\/[^"'\s\\]+\.m3u8[^"'\s\\]*/i);
+            if (mp4Match) videoUrl = mp4Match[0];
+            else if (m3u8Match) videoUrl = m3u8Match[0];
+          }
+        } catch (_) {}
+      }
     }
 
     // 2. Trích xuất tất cả Ảnh Chương Truyện (FoxTruyen, NetTruyen, TruyenQQ, MangaDex...)
@@ -77,32 +142,16 @@ async function extractMediaFromUrl(targetUrl) {
       });
     });
 
-    // Fallback nếu không khớp selector cụ thể: lấy tất cả img hợp lệ trong trang
-    if (imagesSet.size === 0 && !videoUrl) {
-      $('img').each((_, el) => {
-        let src = $(el).attr('src') || $(el).attr('data-src') || $(el).attr('data-original');
-        if (src) {
-          src = src.trim();
-          if (src.startsWith('//')) src = 'https:' + src;
-          if (/^https?:\/\//i.test(src) && !/logo|banner|icon|avatar|gif|fb|facebook|ads|qc/i.test(src)) {
-            try {
-              const absImgUrl = new URL(src, resolvedUrl).href;
-              imagesSet.add(absImgUrl);
-            } catch (_) {}
-          }
-        }
-      });
-    }
-
     const allImages = Array.from(imagesSet);
 
     return {
       success: true,
       title,
       resolvedUrl,
-      type: videoUrl ? 'video' : (allImages.length > 0 ? 'manga' : 'page'),
+      type: (videoUrl || iframeUrl) ? 'video' : (allImages.length > 0 ? 'manga' : 'page'),
       videoUrl,
-      images: allImages // Trả về tất cả các trang ảnh của chap
+      iframeUrl,
+      images: allImages
     };
   } catch (error) {
     console.error('Lỗi trích xuất media từ URL:', error.message);
@@ -115,7 +164,7 @@ async function extractMediaFromUrl(targetUrl) {
 
 // Xử lý gửi trực tiếp Media vào Telegram Chat
 async function processAndSendMedia(ctx, targetUrl) {
-  const statusMsg = await ctx.reply('⏬ <b>Đang trích xuất toàn bộ trang truyện/video về Telegram cho bạn...</b>', { parse_mode: 'HTML' });
+  const statusMsg = await ctx.reply('⏬ <b>Đang trích xuất tập mới nhất & luồng video/ảnh về Telegram...</b>', { parse_mode: 'HTML' });
 
   try {
     const mediaInfo = await extractMediaFromUrl(targetUrl);
@@ -125,23 +174,25 @@ async function processAndSendMedia(ctx, targetUrl) {
       return ctx.reply(`❌ Lỗi: ${mediaInfo.errorMsg}`);
     }
 
-    // A. Gửi Video trực tiếp vào Telegram Chat
-    if (mediaInfo.type === 'video' && mediaInfo.videoUrl) {
-      if (mediaInfo.videoUrl.includes('.mp4')) {
-        await ctx.reply('🎬 <b>Đang tải video trực tiếp về Telegram...</b>', { parse_mode: 'HTML' });
+    // A. Gửi Video / Stream trực tiếp vào Telegram Chat
+    if (mediaInfo.type === 'video') {
+      if (mediaInfo.videoUrl && mediaInfo.videoUrl.includes('.mp4')) {
+        await ctx.reply('🎬 <b>Đang tải video MP4 trực tiếp về Telegram...</b>', { parse_mode: 'HTML' });
         return ctx.replyWithVideo(mediaInfo.videoUrl, {
-          caption: `🎬 <b>${escapeHtml(mediaInfo.title)}</b>\n🔗 <a href="${mediaInfo.resolvedUrl}">Xem gốc</a>`,
+          caption: `🎬 <b>${escapeHtml(mediaInfo.title)}</b>\n🔗 <a href="${mediaInfo.resolvedUrl}">Xem tập mới nhất</a>`,
           parse_mode: 'HTML'
         });
       } else {
+        const streamUrl = mediaInfo.videoUrl || mediaInfo.iframeUrl;
         return ctx.reply([
           `🎬 <b>${escapeHtml(mediaInfo.title)}</b>`,
+          `🌐 <b>Link Tập Mới Nhất:</b> <a href="${escapeHtml(mediaInfo.resolvedUrl)}">${escapeHtml(mediaInfo.resolvedUrl)}</a>`,
           '',
-          `📥 <b>Luồng Video Stream (.m3u8):</b>`,
-          `<code>${mediaInfo.videoUrl}</code>`,
+          `📥 <b>Luồng Video Stream / Player Direct Link:</b>`,
+          `<code>${escapeHtml(streamUrl)}</code>`,
           '',
-          `💡 <i>Bạn có thể bấm vào link trên để Telegram phát trực tiếp hoặc tải qua IDM.</i>`
-        ].join('\n'), { parse_mode: 'HTML' });
+          `💡 <i>Bạn có thể bấm trực tiếp vào link trên để xem mượt mà trên Telegram hoặc dán vào IDM để tải về máy!</i>`
+        ].join('\n'), { parse_mode: 'HTML', link_preview_options: { is_disabled: false } });
       }
     }
 
@@ -150,7 +201,6 @@ async function processAndSendMedia(ctx, targetUrl) {
       const total = mediaInfo.images.length;
       await ctx.reply(`📚 <b>Đang tải trọn bộ ${total} trang truyện vào Telegram chat...</b>`, { parse_mode: 'HTML' });
 
-      // Telegram cho phép gửi tối đa 10 ảnh / 1 Album (MediaGroup)
       const chunkSize = 10;
       for (let i = 0; i < mediaInfo.images.length; i += chunkSize) {
         const chunk = mediaInfo.images.slice(i, i + chunkSize);
@@ -169,12 +219,12 @@ async function processAndSendMedia(ctx, targetUrl) {
       return;
     }
 
-    // C. Trường hợp không tìm thấy media trực tiếp
+    // C. Trường hợp không trích xuất được stream trực tiếp
     return ctx.reply([
       `📄 <b>${escapeHtml(mediaInfo.title)}</b>`,
-      `🌐 <b>URL:</b> ${mediaInfo.resolvedUrl}`,
+      `🌐 <b>Link Tập Mới Nhất:</b> <a href="${escapeHtml(mediaInfo.resolvedUrl)}">${escapeHtml(mediaInfo.resolvedUrl)}</a>`,
       '',
-      `⚠️ <i>Không trích xuất được file media trực tiếp. Bạn hãy mở đường dẫn trên để xem.</i>`
+      `⚠️ <i>Trang web dùng trình phát bảo mật iframe. Bạn bấm vào đường dẫn tập mới nhất ở trên để xem trực tiếp trên Telegram!</i>`
     ].join('\n'), { parse_mode: 'HTML' });
 
   } catch (err) {
