@@ -151,8 +151,8 @@ app.post('/webhook/github', async (req, res) => {
 // Bot Command Menu & Handlers
 const BOT_COMMANDS = [
   { command: 'add', description: 'Thêm web mới vào danh sách theo dõi: /add <url>' },
-  { command: 'del', description: 'Xóa web khỏi danh sách theo dõi: /del <tên_hoặc_id>' },
-  { command: 'list', description: 'Danh sách website đang theo dõi' },
+  { command: 'del', description: 'Menu chọn bấm nút để xóa website nhanh' },
+  { command: 'list', description: 'Xem danh sách & menu tương tác website' },
   { command: 'research', description: 'Quét & kiểm tra ngay danh sách website' },
   { command: 'id', description: 'Xem Telegram Chat ID của bạn' },
   { command: 'ping', description: 'Kiểm tra phản hồi bot' },
@@ -168,9 +168,8 @@ const helpText = [
   '',
   '📌 <b>Các lệnh quản lý Web:</b>',
   '• <b>/add &lt;url&gt;</b> — Thêm nhanh link web (VD: <code>/add https://phimmoi.com</code>)',
-  '• <b>/add &lt;tên&gt; &lt;url&gt;</b> — Thêm web có tên tùy chỉnh',
-  '• <b>/del &lt;tên_hoặc_id&gt;</b> — Xóa web khỏi danh sách theo dõi',
-  '• <b>/list</b> (hoặc <b>/targets</b>) — Xem danh sách các website đang theo dõi',
+  '• <b>/del</b> — Hiện nút bấm chọn website để xóa nhanh không cần gõ ID',
+  '• <b>/list</b> (hoặc <b>/targets</b>) — Xem danh sách kèm các nút bấm tương tác',
   '• <b>/research</b> — Chạy quét & báo cáo danh sách ngay lập tức',
   '',
   '📌 <b>Các lệnh khác:</b>',
@@ -207,29 +206,73 @@ bot.command('research', async (ctx) => {
   await runWebsiteResearch(bot, [String(ctx.chat.id)]);
 });
 
+// Helper tạo bàn phím tương tác cho /list
+function buildListKeyboard() {
+  return {
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: '🔍 Quét ngay', callback_data: 'act:research' },
+          { text: '➕ Thêm Web', callback_data: 'act:add_prompt' },
+          { text: '🗑️ Xóa Web', callback_data: 'act:del_menu' }
+        ]
+      ]
+    }
+  };
+}
+
+// Helper tạo bàn phím danh sách nút bấm chọn xóa cho /del
+function buildDeleteKeyboard() {
+  const targets = loadTargets();
+  if (targets.length === 0) return null;
+
+  const inline_keyboard = [];
+  targets.forEach((t) => {
+    let hostname = t.url;
+    try {
+      hostname = new URL(t.url).hostname.replace(/^www\./, '');
+    } catch (_) {}
+    inline_keyboard.push([
+      { text: `❌ Xóa: ${t.name} (${hostname})`, callback_data: `del:${t.id}` }
+    ]);
+  });
+
+  if (targets.length > 1) {
+    inline_keyboard.push([
+      { text: `🗑️ Xóa TẤT CẢ website`, callback_data: `del_confirm_all` }
+    ]);
+  }
+
+  return { reply_markup: { inline_keyboard } };
+}
+
 // Lệnh xem danh sách website theo dõi (/list hoặc /targets)
 function handleListTargets(ctx) {
   const targets = loadTargets();
   if (targets.length === 0) {
-    return ctx.reply('⚠️ Danh sách theo dõi hiện đang trống. Dùng <code>/add https://domain.com</code> để thêm web mới.', { parse_mode: 'HTML' });
+    return ctx.reply('⚠️ Danh sách theo dõi hiện đang trống. Gõ <code>/add https://domain.com</code> hoặc bấm nút bên dưới để thêm web mới.', {
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '➕ Thêm Web Mới', callback_data: 'act:add_prompt' }]
+        ]
+      }
+    });
   }
 
   const lines = ['🌐 <b>Danh sách website đang theo dõi:</b>', ''];
   targets.forEach((t, i) => {
     lines.push(`${i + 1}. <b>${escapeHtml(t.name)}</b> (ID: <code>${escapeHtml(t.id)}</code>)`);
     lines.push(`   • URL: ${escapeHtml(t.url)}`);
-    if (t.searchKeyword) lines.push(`   • Từ khóa tìm kiếm domain thay thế: <i>${escapeHtml(t.searchKeyword)}</i>`);
+    if (t.searchKeyword) lines.push(`   • Từ khóa tìm kiếm mirror: <i>${escapeHtml(t.searchKeyword)}</i>`);
     lines.push('');
   });
 
-  lines.push('💡 <b>Cú pháp thêm web nhanh:</b>');
-  lines.push('<code>/add https://phimmoi.com</code>');
-  lines.push('<code>/add PhimMoi https://phimmoi.com</code>');
-  lines.push('');
-  lines.push('💡 <b>Cú pháp xóa web:</b>');
-  lines.push('<code>/del phim1</code>');
-
-  return ctx.reply(lines.join('\n'), { parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
+  return ctx.reply(lines.join('\n'), {
+    parse_mode: 'HTML',
+    link_preview_options: { is_disabled: true },
+    ...buildListKeyboard()
+  });
 }
 
 bot.command('list', handleListTargets);
@@ -296,7 +339,7 @@ async function runAddTarget(ctx, inputStr) {
     `📌 <b>Tên:</b> ${escapeHtml(parsed.name)} (ID: <code>${newId}</code>)`,
     `🌐 <b>URL:</b> ${escapeHtml(parsed.url)}`,
     `🔍 <b>Từ khóa tìm kiếm mirror:</b> <i>${escapeHtml(parsed.searchKeyword)}</i>`
-  ].join('\n'), { parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
+  ].join('\n'), { parse_mode: 'HTML', link_preview_options: { is_disabled: true }, ...buildListKeyboard() });
 }
 
 async function handleAddTarget(ctx) {
@@ -318,29 +361,130 @@ async function handleAddTarget(ctx) {
 bot.command('add', handleAddTarget);
 bot.command('addtarget', handleAddTarget);
 
-// Lệnh xóa website (/del hoặc /deltarget)
+// Lệnh xóa website có giao diện Nút Bấm chọn (/del hoặc /deltarget)
 function handleDeleteTarget(ctx) {
   const text = String(ctx.message?.text || '').trim();
-  const query = text.split(/\s+/)[1];
+  const firstSpaceIndex = text.indexOf(' ');
+  const query = firstSpaceIndex === -1 ? '' : text.slice(firstSpaceIndex + 1).trim();
 
-  if (!query) {
-    return ctx.reply('⚠️ Cú pháp: <code>/del &lt;tên_hoặc_id&gt;</code>', { parse_mode: 'HTML' });
+  // Nếu người dùng nhập kèm tên/ID thủ công: /del phim1
+  if (query) {
+    let targets = loadTargets();
+    const initialLength = targets.length;
+    targets = targets.filter(t => t.id !== query && t.name.toLowerCase() !== query.toLowerCase());
+
+    if (targets.length === initialLength) {
+      return ctx.reply(`⚠️ Không tìm thấy website nào khớp với "${escapeHtml(query)}".`);
+    }
+
+    saveTargets(targets);
+    return ctx.reply(`✅ Đã xóa website khỏi danh sách theo dõi thành công!`);
   }
 
-  let targets = loadTargets();
-  const initialLength = targets.length;
-  targets = targets.filter(t => t.id !== query && t.name.toLowerCase() !== query.toLowerCase());
-
-  if (targets.length === initialLength) {
-    return ctx.reply(`⚠️ Không tìm thấy website nào khớp với "${escapeHtml(query)}".`);
+  // Nếu người dùng chỉ gõ /del: hiển thị nút bấm (bubble) chọn từng ID
+  const deleteKeyboard = buildDeleteKeyboard();
+  if (!deleteKeyboard) {
+    return ctx.reply('⚠️ Danh sách theo dõi hiện đang trống, không có website nào để xóa.');
   }
 
-  saveTargets(targets);
-  return ctx.reply(`✅ Đã xóa website khỏi danh sách theo dõi thành công!`);
+  return ctx.reply('🗑️ <b>Bấm vào nút bên dưới để chọn website cần xóa:</b>', {
+    parse_mode: 'HTML',
+    ...deleteKeyboard
+  });
 }
 
 bot.command('del', handleDeleteTarget);
 bot.command('deltarget', handleDeleteTarget);
+
+// Callbacks xử lý sự kiện bấm Nút (Bubble Action Callbacks)
+
+// 1. Xóa 1 website cụ thể
+bot.action(/^del:([a-zA-Z0-9_]+)$/, async (ctx) => {
+  const targetId = ctx.match[1];
+  let targets = loadTargets();
+  const targetToDelete = targets.find(t => t.id === targetId);
+
+  if (!targetToDelete) {
+    return ctx.answerCbQuery('⚠️ Website này đã bị xóa trước đó.', { show_alert: true });
+  }
+
+  targets = targets.filter(t => t.id !== targetId);
+  saveTargets(targets);
+
+  await ctx.answerCbQuery(`✅ Đã xóa ${targetToDelete.name}!`);
+
+  const updatedKeyboard = buildDeleteKeyboard();
+  if (updatedKeyboard) {
+    return ctx.editMessageReplyMarkup(updatedKeyboard.reply_markup).catch(() => {});
+  } else {
+    return ctx.editMessageText('✅ Tất cả website đã được xóa khỏi danh sách theo dõi.', { parse_mode: 'HTML' }).catch(() => {});
+  }
+});
+
+// 2. Xác nhận xóa tất cả
+bot.action('del_confirm_all', async (ctx) => {
+  await ctx.answerCbQuery();
+  return ctx.editMessageText('⚠️ <b>XÁC NHẬN:</b> Bạn có chắc chắn muốn XÓA TẤT CẢ website trong danh sách không?', {
+    parse_mode: 'HTML',
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: '✅ Đồng ý xóa hết', callback_data: 'del_all_yes' },
+          { text: '❌ Hủy', callback_data: 'del_all_no' }
+        ]
+      ]
+    }
+  });
+});
+
+bot.action('del_all_yes', async (ctx) => {
+  saveTargets([]);
+  await ctx.answerCbQuery('Đã xóa tất cả!', { show_alert: true });
+  return ctx.editMessageText('🗑️ <b>Đã xóa toàn bộ danh sách website theo dõi.</b>', { parse_mode: 'HTML' });
+});
+
+bot.action('del_all_no', async (ctx) => {
+  await ctx.answerCbQuery('Đã hủy');
+  const deleteKeyboard = buildDeleteKeyboard();
+  if (deleteKeyboard) {
+    return ctx.editMessageText('🗑️ <b>Bấm vào nút bên dưới để chọn website cần xóa:</b>', {
+      parse_mode: 'HTML',
+      ...deleteKeyboard
+    });
+  }
+  return ctx.editMessageText('⚠️ Danh sách theo dõi trống.');
+});
+
+// 3. Menu tương tác từ /list
+bot.action('act:research', async (ctx) => {
+  await ctx.answerCbQuery('🔎 Đang tiến hành quét...');
+  await ctx.reply('🔎 Đang tiến hành quét và nghiên cứu các website trong danh sách...');
+  await runWebsiteResearch(bot, [String(ctx.chat.id)]);
+});
+
+bot.action('act:add_prompt', async (ctx) => {
+  await ctx.answerCbQuery();
+  return ctx.reply(ADD_INPUT_PROMPT, {
+    reply_markup: {
+      force_reply: true,
+      selective: true,
+      input_field_placeholder: 'Ví dụ: https://phimmoi.com'
+    }
+  });
+});
+
+bot.action('act:del_menu', async (ctx) => {
+  await ctx.answerCbQuery();
+  const deleteKeyboard = buildDeleteKeyboard();
+  if (!deleteKeyboard) {
+    return ctx.reply('⚠️ Danh sách theo dõi hiện đang trống, không có website nào để xóa.');
+  }
+
+  return ctx.reply('🗑️ <b>Bấm vào nút bên dưới để chọn website cần xóa:</b>', {
+    parse_mode: 'HTML',
+    ...deleteKeyboard
+  });
+});
 
 // Xử lý ForceReply tin nhắn
 bot.on('text', async (ctx, next) => {
