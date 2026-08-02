@@ -86,15 +86,28 @@ async function callGeminiApi(prompt) {
       return { success: false, error: 'API Key của bạn không có quyền truy cập mô hình generateContent nào từ Google.' };
     }
 
-    validModels.sort((a, b) => {
-      if (a.includes('1.5-flash')) return -1;
-      if (b.includes('1.5-flash')) return 1;
-      return 0;
+    // Ưu tiên Gemini Flash Preview; có thể đổi tên model qua GEMINI_MODEL trong Dokploy.
+    const preferredModel = (process.env.GEMINI_MODEL || 'gemini-flash-preview').toLowerCase();
+    const previewFlashModels = validModels.filter((model) => {
+      const normalizedModel = model.toLowerCase();
+      return normalizedModel === preferredModel ||
+        (normalizedModel.includes('flash') && normalizedModel.includes('preview'));
     });
+    const otherFlashModels = validModels.filter((model) =>
+      !previewFlashModels.includes(model) && model.toLowerCase().includes('flash')
+    );
+    const fallbackModels = validModels.filter((model) =>
+      !previewFlashModels.includes(model) && !otherFlashModels.includes(model)
+    );
+    const orderedModels = [...new Set([
+      ...previewFlashModels,
+      ...otherFlashModels,
+      ...fallbackModels
+    ])];
 
     let lastError = '';
 
-    for (const targetModel of validModels) {
+    for (const targetModel of orderedModels) {
       try {
         const response = await axios.post(
           `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${GEMINI_API_KEY}`,
