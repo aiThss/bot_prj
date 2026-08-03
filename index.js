@@ -187,17 +187,17 @@ app.post('/webhook/dokploy', async (req, res) => {
 app.post('/webhook/vite', async (req, res) => {
   const body = req.body || {};
   const project = body.project || body.name || 'Vite Project';
-  const url = body.url || '';
+  const url = body.url || body.message || '';
 
   if (!url) {
     return res.status(400).json({ error: 'Missing url in payload' });
   }
 
   try {
-    const telegramMessage = `🚀 <b>[Vite Dev Server]</b>\n\n📌 <b>Dự án:</b> ${escapeHtml(project)}\n🌐 <b>URL:</b> <a href="${url}">${url}</a>\n\n👉 <i>Nhấp vào đường dẫn trên để mở dự án trên điện thoại!</i>`;
+    const telegramMessage = `🚀 [Vite Local Dev Server]\n\n📌 Dự án: ${project}\n🌐 URL: ${url}\n\n👉 Nhấp vào link trên để mở trên điện thoại!`;
 
     await Promise.all(
-      ADMIN_CHAT_IDS.map(chatId => bot.telegram.sendMessage(chatId, telegramMessage, { parse_mode: 'HTML' }))
+      ADMIN_CHAT_IDS.map(chatId => bot.telegram.sendMessage(chatId, telegramMessage))
     );
 
     return res.status(200).json({ success: true, message: 'Vite notification sent to Telegram' });
@@ -206,6 +206,7 @@ app.post('/webhook/vite', async (req, res) => {
     return res.status(500).json({ error: 'Failed to send Telegram notification: ' + error.message });
   }
 });
+
 
 
 // Bot Command Menu & Handlers
