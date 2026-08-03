@@ -183,6 +183,84 @@ app.post('/webhook/dokploy', async (req, res) => {
   }
 });
 
+// Open in External Chrome Browser Endpoint (Escapes Telegram WebView)
+app.get('/open', (req, res) => {
+  const targetUrl = req.query.url || req.query.target || '';
+  if (!targetUrl) return res.status(400).send('Missing target URL');
+
+  const cleanUrl = targetUrl.replace(/^https?:\/\//, '');
+
+  const html = `<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mở bằng Google Chrome</title>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            background: #0f172a;
+            color: #f8fafc;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+            text-align: center;
+        }
+        .card {
+            background: #1e293b;
+            padding: 32px;
+            border-radius: 24px;
+            max-width: 400px;
+            width: 100%;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        h2 { margin-top: 0; color: #fff; font-size: 1.3rem; }
+        p { color: #94a3b8; font-size: 0.9rem; margin-bottom: 24px; }
+        .btn {
+            background: #059669;
+            color: white;
+            padding: 14px 24px;
+            border-radius: 12px;
+            font-weight: 600;
+            text-decoration: none;
+            display: block;
+            margin-top: 12px;
+            font-size: 1rem;
+        }
+        .btn-sec {
+            background: #334155;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>🚀 Đang mở bằng Google Chrome...</h2>
+        <p>Tự động chuyển tiếp từ Telegram sang ứng dụng Chrome.</p>
+        
+        <a id="chromeBtn" class="btn" href="intent://${cleanUrl}#Intent;scheme=http;package=com.android.chrome;end">🌐 Mở bằng Google Chrome</a>
+        <a class="btn btn-sec" href="${targetUrl}">🌐 Mở theo cách thông thường</a>
+    </div>
+
+    <script>
+        const targetUrl = "${targetUrl}";
+        const intentUrl = "intent://${cleanUrl}#Intent;scheme=http;package=com.android.chrome;end";
+        
+        if (/android/i.test(navigator.userAgent)) {
+            window.location.href = intentUrl;
+        } else {
+            window.location.href = targetUrl;
+        }
+    </script>
+</body>
+</html>`;
+
+  res.send(html);
+});
+
 // Vite Dev Server Webhook Endpoint
 app.post('/webhook/vite', async (req, res) => {
   const body = req.body || {};
@@ -194,10 +272,27 @@ app.post('/webhook/vite', async (req, res) => {
   }
 
   try {
-    const telegramMessage = `🚀 [Vite Local Dev Server]\n\n📌 Dự án: ${project}\n🌐 URL: ${url}\n\n👉 Nhấp vào link trên để mở trên điện thoại!`;
+    const host = req.get('host') || 'dokploy.babyress.games';
+    const protocol = req.protocol || 'https';
+    const openUrl = `${protocol}://${host}/open?url=${encodeURIComponent(url)}`;
+
+    const telegramMessage = `🚀 [Vite Local Dev Server]\n\n📌 Dự án: ${project}\n🌐 URL: ${url}\n\n👉 Bấm nút [Mở bằng Chrome] bên dưới để mở ngay bằng Google Chrome!`;
+
+    const inlineKeyboard = {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: '🌐 Mở bằng Google Chrome', url: openUrl }
+          ],
+          [
+            { text: '🔗 Mở trực tiếp', url: url }
+          ]
+        ]
+      }
+    };
 
     await Promise.all(
-      ADMIN_CHAT_IDS.map(chatId => bot.telegram.sendMessage(chatId, telegramMessage))
+      ADMIN_CHAT_IDS.map(chatId => bot.telegram.sendMessage(chatId, telegramMessage, inlineKeyboard))
     );
 
     return res.status(200).json({ success: true, message: 'Vite notification sent to Telegram' });
@@ -206,6 +301,7 @@ app.post('/webhook/vite', async (req, res) => {
     return res.status(500).json({ error: 'Failed to send Telegram notification: ' + error.message });
   }
 });
+
 
 
 
