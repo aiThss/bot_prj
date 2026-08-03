@@ -183,6 +183,31 @@ app.post('/webhook/dokploy', async (req, res) => {
   }
 });
 
+// Vite Dev Server Webhook Endpoint
+app.post('/webhook/vite', async (req, res) => {
+  const body = req.body || {};
+  const project = body.project || body.name || 'Vite Project';
+  const url = body.url || '';
+
+  if (!url) {
+    return res.status(400).json({ error: 'Missing url in payload' });
+  }
+
+  try {
+    const telegramMessage = `🚀 <b>[Vite Dev Server]</b>\n\n📌 <b>Dự án:</b> ${escapeHtml(project)}\n🌐 <b>URL:</b> <a href="${url}">${url}</a>\n\n👉 <i>Nhấp vào đường dẫn trên để mở dự án trên điện thoại!</i>`;
+
+    await Promise.all(
+      ADMIN_CHAT_IDS.map(chatId => bot.telegram.sendMessage(chatId, telegramMessage, { parse_mode: 'HTML' }))
+    );
+
+    return res.status(200).json({ success: true, message: 'Vite notification sent to Telegram' });
+  } catch (error) {
+    console.error('Failed to send Vite notification to Telegram:', error.message);
+    return res.status(500).json({ error: 'Failed to send Telegram notification: ' + error.message });
+  }
+});
+
+
 // Bot Command Menu & Handlers
 const BOT_COMMANDS = [
   { command: 'search', description: 'Tìm kiếm phim/truyện trên Web cụ thể hoặc tất cả web' },
