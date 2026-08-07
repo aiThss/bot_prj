@@ -272,11 +272,11 @@ app.post('/webhook/vite', async (req, res) => {
   }
 
   try {
-    const host = req.get('host') || 'dokploy.babyress.games';
-    const protocol = req.protocol || 'https';
+    const host = req.get('host') || 'control-prj-bot.babyress.games';
+    const protocol = (req.headers['x-forwarded-proto'] || req.protocol || 'https').split(',')[0];
     const openUrl = `${protocol}://${host}/open?url=${encodeURIComponent(url)}`;
 
-    const telegramMessage = `🚀 [Vite Local Dev Server]\n\n📌 Dự án: ${project}\n🌐 URL: ${url}\n\n👉 Bấm nút [Mở bằng Chrome] bên dưới để mở ngay bằng Google Chrome!`;
+    const telegramMessage = `🚀 [Vite Local Dev Server]\n\n📌 Dự án: ${project}\n🌐 URL Local: ${url}\n\n🌐 Mở bằng Chrome: ${openUrl}`;
 
     const inlineKeyboard = {
       reply_markup: {
@@ -285,7 +285,7 @@ app.post('/webhook/vite', async (req, res) => {
             { text: '🌐 Mở bằng Google Chrome', url: openUrl }
           ],
           [
-            { text: '🔗 Mở trực tiếp', url: url }
+            { text: '🔗 Link trực tiếp', url: url }
           ]
         ]
       }
@@ -301,6 +301,7 @@ app.post('/webhook/vite', async (req, res) => {
     return res.status(500).json({ error: 'Failed to send Telegram notification: ' + error.message });
   }
 });
+
 
 
 
